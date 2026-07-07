@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+boogu-output/
+.venv/
+
+# Python cache
+.pytest_cache/
+.ruff_cache/
+# Specmark/openspec 临时产物
+openspec/
+results.tsv
