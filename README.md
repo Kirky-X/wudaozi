@@ -1,19 +1,36 @@
-# wudaozi（吴道子）
+# Wudaozi (吴道子) —— Boogu-Image 出图技能
 
-Boogu-Image 文生图 / 图生图 Agent Skill。把模糊图片需求结构化为 7 维 prompt，按场景从 2×2×2 模型矩阵选模型，自动管理种子、宽高比、输出路径。
+[![GitHub Release](https://img.shields.io/github/v/release/Kirky-X/wudaozi?style=flat-square)](https://github.com/Kirky-X/wudaozi/releases)
+[![GitHub License](https://img.shields.io/github/license/Kirky-X/wudaozi?style=flat-square)](LICENSE)
 
-命名取自唐代画圣吴道子。
+wudaozi 是一个面向 AI agent 的文生图/图生图 skill，封装 `~/software/Boogu-Image`（8 组模型矩阵 + DMD turbo 范式 + fp8 量化）。把用户的模糊图片需求（"画一只猫"）变成一张能跑的命令：**结构化 prompt → 选模型 → 填参数 → 调脚本**。
 
-## 文件结构
+模型选择、种子、宽高比、输出路径全部由 [`scripts/boogu.py`](scripts/boogu.py) 确定性处理，**不交给模型猜**。完整路由表与流程文档见 [SKILL.md](SKILL.md)。
 
+## 安装
+
+### 方式一：通过 `skills` 包安装（推荐）
+
+需 [Node.js](https://nodejs.org/) 18+ 和 `skills` npm 包(v1.5.12+)。`skills` 是 open agent skills 生态的 CLI，支持 68+ agents(Claude Code / Trae / Cursor / Codex / OpenCode 等)。
+
+```bash
+# 安装到 Claude Code
+npx skills add Kirky-X/wudaozi --agent claude-code -y
+
+# 安装到 Trae
+npx skills add Kirky-X/wudaozi --agent trae -y
+
+# 列出仓库中可被发现的所有 skills（不安装）
+npx skills add https://github.com/Kirky-X/wudaozi.git --list
 ```
-wudaozi/
-├── SKILL.md                       # 入口路由 + 模型矩阵决策表
-├── scripts/
-│   └── boogu.py                   # 核心包装：矩阵路由 + 默认值 + 种子 + 输出路径 + 资源探测
-├── references/
-│   └── prompt-template.md         # 结构化 prompt 7 维度模板 + 案例
-└── README.md                      # 本文件
+
+### 方式二：传统 git clone
+
+```bash
+git clone https://github.com/Kirky-X/wudaozi.git
+# 将 SKILL.md + references/ + scripts/ 复制到 agent skills 目录
+#   Claude Code:  ~/.claude/skills/wudaozi/
+#   Trae:         ~/.trae-cn/skills/wudaozi/
 ```
 
 ## 快速开始
@@ -52,9 +69,17 @@ python3 scripts/boogu.py t2i -i "..." --dry-run
 - **base / turbo**：50 步 CFG 高质量 / 4 步 DMD 快速
 - **bf16 / fp8**：非量化 / 量化（省约 50% 显存）
 
-脚本会按 `(mode, turbo, quantized)` 自动选模型与官方入口脚本，并填充对应默认参数。
+脚本按 `(mode, turbo, quantized)` 自动选模型与官方入口脚本，并填充对应默认参数。
 
-## 关键约束（务必知悉）
+## 结构化 Prompt
+
+用户需求通常不完整。SKILL.md 强制把需求拆成 **7 维度**补全后再生成（详见 [`references/prompt-template.md`](references/prompt-template.md)）：
+
+```
+主体 → 动作/神态 → 背景/环境 → 构图/视角 → 光线 → 风格/媒介 → 画质
+```
+
+## 关键约束
 
 1. **GPU 必需**：真出图需 CUDA。无 GPU 环境只能 `--dry-run` 或 `--device cpu`（极慢）。
 2. **模型本地可用性**：本机已下载 `Base` + `Turbo`（T2I 非量化）。其余 6 组需用户下载到 `~/software/Boogu-Image/models/`；脚本会探测缺失并报错。
@@ -71,18 +96,17 @@ python3 scripts/boogu.py t2i -i "..." --dry-run
 | dmd_conditioning_sigma | —    | t2i=0.001 / ti2i=0.0 |
 | CFG                    | 启用 | 关闭（DMD 学生推理） |
 
-## 结构化 Prompt
+## 文件结构
 
-用户需求通常不完整。SKILL.md 强制把需求拆成 **7 维度**补全后再生成（详见 [`references/prompt-template.md`](references/prompt-template.md)）：
+```
+wudaozi/
+├── SKILL.md                       # 入口路由 + 模型矩阵决策表
+├── scripts/
+│   └── boogu.py                   # 核心包装：矩阵路由 + 默认值 + 种子 + 输出路径 + 资源探测
+└── references/
+    └── prompt-template.md         # 结构化 prompt 7 维度模板 + 案例
+```
 
-主体 → 动作/神态 → 背景/环境 → 构图/视角 → 光线 → 风格/媒介 → 画质
-
-## 特殊场景（logo / IP / 产品衍生图）
-
-三类 t2i 子任务，**走同一 Boogu-Image t2i 后端，仅 prompt 模板不同**（不绑定任何外部 API）。模板见 [`references/prompt-template.md`](references/prompt-template.md) § logo / § IP / § product。
-
-> ⚠️ Boogu-Image 出的是"插画感 logo/角色"，非矢量设计稿。需精确矢量 logo → 用专门设计工具。
-
-## 许可
+## 许可证
 
 MIT
