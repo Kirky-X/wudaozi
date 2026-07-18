@@ -55,7 +55,11 @@ class TestResolveSize:
 
     def test_aspect_preset(self):
         assert boogu.resolve_size(self._ns(aspect="1:1")) == (1024, 1024)
-        assert boogu.resolve_size(self._ns(aspect="9:16")) == (1024, 1824)
+        # 9:16 竖屏：H=1824 W=1024（修正横竖标反后）
+        assert boogu.resolve_size(self._ns(aspect="9:16")) == (1824, 1024)
+        # 16:9 横屏：H=1024 W=1824
+        assert boogu.resolve_size(self._ns(aspect="16:9")) == (1024, 1824)
+        assert boogu.resolve_size(self._ns(aspect="3:4")) == (1360, 1024)  # 竖
 
     def test_both_hw(self):
         assert boogu.resolve_size(self._ns(height=1360, width=1024)) == (1360, 1024)
