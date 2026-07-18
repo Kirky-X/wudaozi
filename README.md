@@ -9,7 +9,7 @@ wudaozi 是一个面向 AI agent 的多能力媒体生成 skill，把用户的�
 | 文生图 t2i   | **agnes** 云端 · **kolors** 云端 · **boogu** 本地               | `AGNES_API_KEY` / `AIPING_API_KEY` / — |
 | 图生图 ti2i  | **agnes** 云端 · **boogu** 本地（⚠️ kolors 不支持）              | `AGNES_API_KEY` / —                    |
 | 图片理解     | **agnes**（agnes-2.0-flash）· **aiping**（DeepSeek-OCR-2）       | `AGNES_API_KEY` / `AIPING_API_KEY`    |
-| 视频生成     | **agnes**（agnes-video-v2.0，异步轮询）                         | `AGNES_API_KEY`                        |
+| 视频生成     | **agnes**（agnes-video-v2.0：t2vid/ti2vid/multi/keyframes 异步轮询） | `AGNES_API_KEY`                   |
 
 所有云端 provider 失败均显式报错，不自动 fallback（避免画质/风格跳变让用户困惑）。完整路由表与流程文档见 [SKILL.md](SKILL.md)。
 
@@ -108,6 +108,12 @@ AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "..." --duration 3s
 
 # 图生视频（首帧图必须是公网 URL，不支持 base64）
 AGNES_API_KEY=agn-xxx python3 scripts/video.py ti2vid -i "镜头缓慢推进" --image https://x/a.png
+
+# 多图融合（multi）/ 关键帧过渡（keyframes）：≥2 张公网图
+AGNES_API_KEY=agn-xxx python3 scripts/video.py multi -i "从场景 A 变到场景 B" \
+    --images https://x/a.png https://x/b.png
+AGNES_API_KEY=agn-xxx python3 scripts/video.py keyframes -i "保持人物一致，视角推近" \
+    --images https://x/a.png https://x/b.png
 ```
 
 ## boogu 模型矩阵（2×2×2 = 8 组）
@@ -131,18 +137,21 @@ AGNES_API_KEY=agn-xxx python3 scripts/video.py ti2vid -i "镜头缓慢推进" --
 
 ## 结构化 Prompt
 
-出图需求通常不完整。SKILL.md 强制把需求拆成 **7 维度**补全后再生成（详见 [`references/prompt-template.md`](references/prompt-template.md)）：
+需求通常不完整。按能力分维度结构化（详见 [`references/prompt-template.md`](references/prompt-template.md)）：
 
-```
-主体 → 动作/神态 → 背景/环境 → 构图/视角 → 光线 → 风格/媒介 → 画质
-```
+| 能力     | 结构                                                             |
+| -------- | ---------------------------------------------------------------- |
+| 文生图   | 主体 → 动作 → 背景 → 构图 → 光线 → 风格 → 画质（**7 维**）       |
+| 图生图   | 改变要求 → 新风格 → 增删元素 → **保留元素**（改变+保留）         |
+| 视频     | 主体 → 动作 → 场景 → 镜头运动 → 光线 → 风格（**6 维** + 运动描述）|
+| 图片理解 | 角色 → 任务 → 上下文 → 要求 → 输出格式（**5 段式**）             |
 
 ## 关键约束
 
 1. **能力边界**：本技能只做生成与理解。视频/音频剪辑、3D 模型、PS 类精修合成（抠图/调色/拼接）不在范围。
 2. **kolors 仅 t2i**：kolors 硬件约束只支持文生图，**不支持图生图**（CLI 直接拒绝 ti2i）。图生图走 agnes/boogu。
 3. **视频 num_frames 须 8n+1**（81/121/241/441），≤441；frame_rate 1-60。入口校验拒绝，用 `--duration` 预设自动满足。
-4. **视频 ti2vid `--image` 只接受公网 URL**（文档明确，不支持 base64）；本地图先传图床/OSS，或改用 t2vid。
+4. **视频 ti2vid `--image` / multi·keyframes `--images` 只接受公网 URL**（文档明确，不支持 base64）；本地图先传图床/OSS。multi/keyframes 至少 2 张（单张走 ti2vid）。
 5. **boogu GPU 必需**：boogu 真出图需 CUDA。无 GPU 环境只能 `--dry-run` 或 `--device cpu`（极慢）；要真出图请走 agnes/kolors。
 6. **boogu 模型本地可用性**：本机已下载 `Base` + `Turbo`（T2I 非量化）。其余 6 组需用户下载到 `~/software/Boogu-Image/models/`；脚本会探测缺失并报错。
 7. **分辨率**：boogu 模型原生最大 2K（2048），所有宽高必须 16 对齐（脚本自动处理）。agnes/kolors 是云端黑盒，size 清单未知，HTTP 400 时换 `--aspect` 预设。

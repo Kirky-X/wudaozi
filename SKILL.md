@@ -15,7 +15,7 @@ license: MIT
 | 文生图 t2i   | 画/生成/AI画图/出图              | **agnes** 云端 · **boogu** 本地 · **kolors** 云端（aiping）            | `AGNES_API_KEY` / — / `AIPING_API_KEY` |
 | 图生图 ti2i  | 改图/换背景/加元素/编辑这张      | **agnes** 云端 · **boogu** 本地（⚠️ kolors **不支持** ti2i）            | `AGNES_API_KEY` / — |
 | 图片理解     | 看图/识图/这张图里有什么/解题/OCR | **agnes**（agnes-2.0-flash）· **aiping**（DeepSeek-OCR-2）              | `AGNES_API_KEY` / `AIPING_API_KEY` |
-| 视频生成     | 生成视频/文生视频/图生视频       | **agnes**（agnes-video-v2.0，异步轮询）                                | `AGNES_API_KEY`     |
+| 视频生成     | 生成视频/文生视频/图生视频/多图/关键帧 | **agnes**（agnes-video-v2.0：t2vid/ti2vid/multi/keyframes 异步轮询）| `AGNES_API_KEY`     |
 
 > 🔴 **CHECKPOINT · 能力边界**：本技能**只做生成与理解**。视频/音频剪辑、3D 模型、PS 类精修合成（抠图/调色/拼接）**不在范围**——这些不要硬塞给生成模型。
 
@@ -61,11 +61,16 @@ flowchart TD
     VIS --> ProvVis{"provider?<br/>agnes / aiping"}
     ProvVis -- agnes --> V4["vision.py agnes"]
     ProvVis -- aiping --> V4B["vision.py aiping"]
-    VID --> Vmode{"有首帧图?"}
-    Vmode -- "是(URL)" --> TI2V["ti2vid 图生视频"]
-    Vmode -- "否" --> T2V["t2vid 文生视频"]
-    TI2V --> VID4["video.py（异步轮询）"]
-    T2V --> VID4
+    VID --> Vmode{"几张参考图?"}
+    Vmode -- "0 张" --> T2V["t2vid 文生视频"]
+    Vmode -- "1 张(URL)" --> TI2V["ti2vid 图生视频"]
+    Vmode -- "≥2 张(URL)" --> Vmk{"过渡类型?"}
+    Vmk -- "场景融合" --> MLT["multi 多图视频"]
+    Vmk -- "帧间过渡" --> KF["keyframes 关键帧"]
+    T2V --> VID4["video.py（异步轮询）"]
+    TI2V --> VID4
+    MLT --> VID4
+    KF --> VID4
     A4 --> Out(["PNG"])
     K4 --> Out
     B1 --> Out
@@ -147,7 +152,7 @@ flowchart TD
 
 ### 图片理解（vision）
 
-提问要**具体可答**，避免"描述一下"这种空泛指令。按用途给候选：
+用 **5 段式结构**提问质量更高：`[角色] + [任务] + [上下文] + [要求] + [输出格式]`（详见 `references/prompt-template.md` § 图片理解）。至少要做到**具体可答**，避免"描述一下"这种空泛指令。按用途给候选：
 
 | 用途           | 示例 question                                        |
 | -------------- | ---------------------------------------------------- |
@@ -157,12 +162,15 @@ flowchart TD
 | 对比分析       | "这张图与 typical XX 的差异在哪"                     |
 
 > aiping `DeepSeek-OCR-2` 在 **OCR/公式/解题**上强项；agnes-2.0-flash 在**通识描述**上更均衡。按用途选 provider。
+>
+> ⚠️ **图像 URL 必须可公开访问**：需登录/认证/防盗链的 URL 模型读不到（silent 失败，不报错只臆测）。本地图片 vision.py 自动转 base64 data URI 绕过此限制。
 
 ### 视频生成（video）
 
-视频 prompt 强调**动态**而非静态构图——补「镜头运动 + 时间演变」：
+视频 prompt 心智**与出图不同**——描述「一段时间的演变」而非一瞬间。核心公式：`[主体] + [动作] + [场景] + [镜头运动] + [光线] + [风格]`（详见 `references/prompt-template.md` § 视频生成）。补「镜头运动 + 运动描述」：
 
 - 镜头：推进/拉远/平移/环绕/固定
+- **运动描述**（视频灵魂）：显式声明「哪些动 + 哪些稳定」——"...hair moving gently in the wind, **while keeping the face and outfit consistent**"，避免主体漂移
 - 演变：「先…然后…最后…」的时间线
 - 时长：3s（试构图）/ 5s（默认）/ 10s（完整叙事）/ 18s（长镜头，≤441 帧）
 
@@ -296,6 +304,14 @@ AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --duration 3s --aspect 16:
 # 图生视频（首帧图必须是公网 URL，不支持 base64）
 AGNES_API_KEY=agn-xxx python3 video.py ti2vid -i "镜头缓慢推进" --image https://x/a.png
 
+# 多图融合（multi）：≥2 张公网图，描述图与图之间的关系/场景过渡
+AGNES_API_KEY=agn-xxx python3 video.py multi -i "从场景 A 平滑变到场景 B" \
+    --images https://x/a.png https://x/b.png
+
+# 关键帧过渡（keyframes）：≥2 张公网图，描述帧间过渡，保持身份/视角一致
+AGNES_API_KEY=agn-xxx python3 video.py keyframes -i "保持人物一致，镜头缓慢推近" \
+    --images https://x/a.png https://x/b.png
+
 # 调试：只看创建任务 curl
 AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --dry-run
 ```
@@ -304,7 +320,7 @@ video.py 异步流程：POST `/v1/videos` 创建任务拿 `video_id` → 轮询 
 
 > 🔴 **CHECKPOINT · 视频硬约束**：
 > - **num_frames 须 8n+1**（81/121/241/441），≤441；frame_rate 1-60。入口校验拒绝，避免服务端 400。用 `--duration` 预设自动满足。
-> - **ti2vid 的 `--image` 只接受公网 http(s) URL**（文档明确，视频生成不支持 base64）——本地图片须先传图床/OSS，或改用 t2vid。
+> - **ti2vid `--image` / multi·keyframes `--images` 都只接受公网 http(s) URL**（文档明确，视频生成不支持 base64）——本地图片须先传图床/OSS。multi/keyframes 至少 2 张 URL（单张走 ti2vid）。
 > - 视频生成慢，`--max-wait` 默认 1200s（覆盖最长 18s 视频的生成耗时）；超时会打印 `video_id` 供手动 `curl` 查询。
 
 ---
@@ -366,7 +382,7 @@ video.py 异步流程：POST `/v1/videos` 创建任务拿 `video_id` → 轮询 
 - **不要单传 `--height` 不传 `--width`**（或反之）—— 脚本会拒绝（B1），单维改尺寸用 `--aspect`。
 - **不要对非 fp8 模型加 `--quantized`**（或反之）—— 脚本会拒绝（B2，fp8 标志与模型目录必须一致）。
 - **不要给 kolors 传 ti2i** —— kolors 硬件约束只支持 t2i，CLI 直接拒绝；图生图走 agnes/boogu。
-- **不要给 ti2vid 传本地路径/base64** —— 视频生成 `--image` 只接受公网 URL；本地图先传图床。
+- **不要给 ti2vid/multi/keyframes 传本地路径/base64** —— 视频生成 `--image`/`--images` 只接受公网 URL；本地图先传图床。multi/keyframes 至少 2 张 URL。
 - **不要传非 8n+1 的 num_frames 给视频** —— 入口校验拒绝；用 `--duration` 预设自动满足。
 
 ---
