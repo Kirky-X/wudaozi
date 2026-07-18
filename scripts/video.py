@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """wudaozi —— agnes-video-v2.0 视频生成包装脚本（异步任务 + 轮询）。
 
-支持三种模式：
+支持四种模式：
 - t2vid（文生视频）：prompt → 视频
-- ti2vid（图生视频）：prompt + 公网图 URL → 视频
+- ti2vid（图生视频）：prompt + 公网图 URL（首帧）→ 视频
+- multi（多图视频）：prompt + 多张公网图 URL → 多图融合视频
+- keyframes（关键帧动画）：prompt + 多张公网图 URL（关键帧）→ 帧间过渡视频
 
 核心职责（纯 stdlib）：
 1. 构造视频任务请求（model/prompt/分辨率/帧数/帧率 + 可选 image）
@@ -25,8 +27,10 @@
 # num_frames 8n+1 是模型硬约束，入口校验拒绝，避免服务端 400。
 
 import argparse
+import ipaddress
 import json
 import os
+import socket
 import sys
 import time
 import urllib.error
@@ -109,6 +113,43 @@ def resolve_output(a: argparse.Namespace, width: int, height: int) -> Path:
     return out_dir / f"agnes_video_{a.mode}_{width}x{height}_{ts}_{suffix}.mp4"
 
 
+def _parse_host_ip(host: str):
+    """host → IPv4Address/IPv6Address 或 None（域名/无法解析）。
+
+    ipaddress.ip_address 只认标准点分十进制/IPv6，漏十进制(2852039166)/十六进制(0xA9FEA9FE)/
+    八进制 IP 这类 inet_aton 认的非标准写法（Linux 下 2852039166 → 169.254.169.254 云元数据）；
+    fallback 到 socket.inet_aton 补检测，挡 ipaddress 的盲区，避免 SSRF 非标准 IP 绕过。
+    解析失败视为公网域名放行（DNS rebinding 属服务端 fetch 责任，CLI 层不引入 DNS 查询）。
+    """
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        # ponytail: inet_aton 接受十进制/十六进制/八进制 IP（ipaddress 盲区），转 packed 再用 ipaddress 校验属性
+        return ipaddress.ip_address(socket.inet_aton(host))
+    except (OSError, ValueError):
+        return None
+
+
+def _assert_public_url(u: str, ctx: str = "URL") -> None:
+    """校验公网 http(s) URL，拒绝内网/环回/链路本地/云元数据地址（防 SSRF）。"""
+    p = urllib.parse.urlparse(u)
+    if p.scheme not in ("http", "https"):
+        sys.exit(
+            f"[ERROR] {ctx} 只接受公网 http(s) URL（视频生成不支持 base64）：{u}\n"
+            "  → 先把本地图片上传到图床/OSS"
+        )
+    host = (p.hostname or "").lower()
+    if host == "localhost":
+        sys.exit(f"[ERROR] {ctx} 禁止 localhost（SSRF 防护）：{u}")
+    ip = _parse_host_ip(host)
+    if ip is None:
+        return  # 公网域名，放行
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        sys.exit(f"[ERROR] {ctx} 禁止内网/环回/链路本地/保留地址（SSRF 防护）：{u}")
+
+
 def build_body(
     a: argparse.Namespace, width: int, height: int, num_frames: int, frame_rate: int
 ) -> dict:
@@ -121,16 +162,30 @@ def build_body(
         "num_frames": num_frames,
         "frame_rate": frame_rate,
     }
+    if a.image and a.images:
+        sys.exit(
+            "[ERROR] --image 与 --images 互斥（ti2vid 用 --image，multi/keyframes 用 --images）"
+        )
     if a.mode == "ti2vid":
         if not a.image:
             sys.exit("[ERROR] 图生视频(ti2vid)必须提供 --image 公网 URL")
-        if not a.image.startswith(("http://", "https://")):
-            # 文档明确 image 是 URL；视频生成不支持 base64（与图像理解不同）
-            sys.exit(
-                "[ERROR] ti2vid --image 只接受公网 http(s) URL（视频生成不支持 base64）\n"
-                "  → 先把本地图片上传到图床/OSS，或改用 t2vid"
-            )
+        _assert_public_url(a.image, "ti2vid --image")
         body["image"] = a.image
+    elif a.mode in ("multi", "keyframes"):
+        # multi 多图融合 / keyframes 关键帧过渡 —— 官方走 extra_body.image 数组
+        if not a.images or len(a.images) < 2:
+            sys.exit(
+                f"[ERROR] {a.mode} 至少需要 2 张公网图 URL（--images，空格分隔）\n"
+                "  → 单张图请改用 ti2vid"
+            )
+        for u in a.images:
+            _assert_public_url(u, f"{a.mode} --images")
+        # multi：不带 mode 字段（agnes 靠 extra_body.image 数组 + 无 mode 区分）
+        # keyframes：显式 mode=keyframes（帧间过渡）
+        extra = {"image": list(a.images)}
+        if a.mode == "keyframes":
+            extra["mode"] = "keyframes"
+        body["extra_body"] = extra
     if a.seed is not None:
         body["seed"] = a.seed
     if a.negative_instruction:
@@ -280,6 +335,12 @@ def parse_args() -> argparse.Namespace:
   # 图生视频（首帧图必须是公网 URL）
   AGNES_API_KEY=agn-xxx python3 video.py ti2vid -i "镜头缓慢推进" --image https://x/a.png
 
+  # 多图融合（multi）/ 关键帧过渡（keyframes）：至少 2 张公网图
+  AGNES_API_KEY=agn-xxx python3 video.py multi -i "从场景 A 平滑变到场景 B" \\
+      --images https://x/a.png https://x/b.png
+  AGNES_API_KEY=agn-xxx python3 video.py keyframes -i "保持人物一致，视角推近" \\
+      --images https://x/a.png https://x/b.png
+
   # 只看 curl 不真调
   AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --dry-run
 
@@ -289,13 +350,21 @@ def parse_args() -> argparse.Namespace:
         + ", ".join(f"{k}={v[0]}x{v[1]}" for k, v in RESOLUTIONS.items()),
     )
     p.add_argument(
-        "mode", choices=["t2vid", "ti2vid"], help="t2vid=文生视频, ti2vid=图生视频"
+        "mode",
+        choices=["t2vid", "ti2vid", "multi", "keyframes"],
+        help="t2vid=文生视频, ti2vid=图生视频(单图首帧), multi=多图融合, keyframes=关键帧过渡",
     )
     p.add_argument(
         "--instruction", "-i", required=True, help="视频内容描述"
     )
     p.add_argument(
         "--image", default=None, help="ti2vid 首帧图公网 URL（ti2vid 必填）"
+    )
+    p.add_argument(
+        "--images",
+        nargs="+",
+        default=None,
+        help="multi/keyframes 多张公网图 URL（至少 2 张，空格分隔）",
     )
     p.add_argument(
         "--aspect",
@@ -400,7 +469,8 @@ if __name__ == "__main__":
     # body 结构
     body = build_body(
         SimpleNamespace(
-            mode="t2vid", instruction="测", image=None, seed=42, negative_instruction="模糊"
+            mode="t2vid", instruction="测", image=None, images=None,
+            seed=42, negative_instruction="模糊",
         ),
         1152, 768, 121, 24,
     )
@@ -408,6 +478,25 @@ if __name__ == "__main__":
     assert body["width"] == 1152 and body["height"] == 768
     assert body["seed"] == 42 and body["negative_prompt"] == "模糊"
     assert "image" not in body
+    # multi / keyframes —— extra_body.image 数组（keyframes 多 mode 字段）
+    mbody = build_body(
+        SimpleNamespace(
+            mode="multi", instruction="过渡", image=None,
+            images=["https://x/1.png", "https://x/2.png"], seed=None, negative_instruction=None,
+        ),
+        1152, 768, 121, 24,
+    )
+    assert mbody["extra_body"] == {"image": ["https://x/1.png", "https://x/2.png"]}
+    kbody = build_body(
+        SimpleNamespace(
+            mode="keyframes", instruction="过渡", image=None,
+            images=["https://x/1.png", "https://x/2.png"], seed=None, negative_instruction=None,
+        ),
+        1152, 768, 121, 24,
+    )
+    assert kbody["extra_body"] == {
+        "image": ["https://x/1.png", "https://x/2.png"], "mode": "keyframes",
+    }
     print(f"  分辨率预设: {len(RESOLUTIONS)} 种，时长预设: {len(DURATIONS)} 种")
     print(f"  CREATE: {CREATE_ENDPOINT}")
     print(f"  POLL: {POLL_ENDPOINT}?video_id=<ID>")

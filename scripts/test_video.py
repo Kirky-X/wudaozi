@@ -102,7 +102,8 @@ class TestResolveFrames:
 # ---------- build_body ----------
 def _body_ns(**kw):
     base = dict(
-        mode="t2vid", instruction="测", image=None, seed=None, negative_instruction=None
+        mode="t2vid", instruction="测", image=None, images=None,
+        seed=None, negative_instruction=None,
     )
     base.update(kw)
     return SimpleNamespace(**base)
@@ -140,6 +141,120 @@ class TestBuildBody:
             video.build_body(
                 _body_ns(mode="ti2vid", image="/local/a.png"), 768, 1152, 121, 24
             )
+
+    def test_image_and_images_mutually_exclusive_exits(self):
+        # --image（ti2vid）与 --images（multi/keyframes）互斥，不静默丢参数
+        with pytest.raises(SystemExit):
+            video.build_body(
+                _body_ns(mode="ti2vid", image="https://x/a.png",
+                         images=["https://x/b.png", "https://x/c.png"]),
+                768, 1152, 121, 24,
+            )
+
+
+class TestBuildBodyMultiKeyframes:
+    """multi 多图视频 / keyframes 关键帧动画 —— extra_body.image 数组（agnes 官方最佳实践）。"""
+
+    def test_multi_with_images(self):
+        body = video.build_body(
+            _body_ns(mode="multi", images=["https://x.com/1.png", "https://x.com/2.png"]),
+            1152, 768, 121, 24,
+        )
+        # multi：extra_body.image 数组，不带 mode 字段
+        assert body["extra_body"] == {"image": ["https://x.com/1.png", "https://x.com/2.png"]}
+        assert "mode" not in body["extra_body"]
+
+    def test_keyframes_with_images(self):
+        body = video.build_body(
+            _body_ns(mode="keyframes", images=["https://x.com/1.png", "https://x.com/2.png"]),
+            1152, 768, 121, 24,
+        )
+        # keyframes：extra_body.image 数组 + mode=keyframes
+        assert body["extra_body"] == {
+            "image": ["https://x.com/1.png", "https://x.com/2.png"],
+            "mode": "keyframes",
+        }
+
+    def test_multi_missing_images_exits(self):
+        with pytest.raises(SystemExit):
+            video.build_body(_body_ns(mode="multi", images=None), 768, 1152, 121, 24)
+
+    def test_multi_single_image_exits(self):
+        # multi 至少 2 张（单张走 ti2vid）
+        with pytest.raises(SystemExit):
+            video.build_body(
+                _body_ns(mode="multi", images=["https://x.com/1.png"]), 768, 1152, 121, 24
+            )
+
+    def test_multi_local_path_exits(self):
+        # 视频生成 images 只接受公网 URL，不支持本地/base64
+        with pytest.raises(SystemExit):
+            video.build_body(
+                _body_ns(mode="multi", images=["/local/1.png", "https://x.com/2.png"]),
+                768, 1152, 121, 24,
+            )
+
+    def test_keyframes_local_path_exits(self):
+        with pytest.raises(SystemExit):
+            video.build_body(
+                _body_ns(mode="keyframes", images=["https://x.com/1.png", "/local/2.png"]),
+                768, 1152, 121, 24,
+            )
+
+
+class TestAssertPublicUrl:
+    """SSRF 防护 —— 拒绝内网/环回/链路本地/云元数据地址。"""
+
+    def test_public_domain_ok(self):
+        # 公网域名放行（不抛异常）
+        video._assert_public_url("https://example.com/a.png")
+        video._assert_public_url("http://cdn.agnes-ai.com/x.jpg")
+
+    def test_non_http_exits(self):
+        with pytest.raises(SystemExit):
+            video._assert_public_url("file:///etc/passwd")
+        with pytest.raises(SystemExit):
+            video._assert_public_url("/local/a.png")
+
+    def test_localhost_exits(self):
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://localhost/a.png")
+
+    def test_loopback_ip_exits(self):
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://127.0.0.1/a.png")
+
+    def test_cloud_metadata_exits(self):
+        # AWS/阿里云元数据端点（SSRF 主要目标）
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://169.254.169.254/latest/meta-data/")
+
+    def test_private_10_exits(self):
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://10.0.0.1/a.png")
+
+    def test_private_192168_exits(self):
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://192.168.1.1/a.png")
+
+    def test_private_172_exits(self):
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://172.16.0.1/a.png")
+
+    def test_decimal_ip_exits(self):
+        # 十进制 IP 2852039166 = 169.254.169.254（云元数据），ipaddress 漏、inet_aton 认 → fallback 补
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://2852039166/a.png")
+
+    def test_hex_ip_exits(self):
+        # 十六进制 IP 0xA9FEA9FE = 169.254.169.254
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://0xA9FEA9FE/a.png")
+
+    def test_octal_ip_exits(self):
+        # 八进制 IP 0251.0376.0251.0376 = 169.254.169.254
+        with pytest.raises(SystemExit):
+            video._assert_public_url("http://0251.0376.0251.0376/a.png")
 
 
 # ---------- create_task（mock urlopen）----------
