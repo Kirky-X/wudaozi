@@ -1,192 +1,192 @@
-# Wudaozi (吴道子) —— 多能力媒体生成技能（出图 · 图片理解 · 视频）
+# Wudaozi — Multi-capability Media Generation Skill (Image Generation · Image Understanding · Video)
 
 [![GitHub Release](https://img.shields.io/github/v/release/Kirky-X/wudaozi?style=flat-square)](https://github.com/Kirky-X/wudaozi/releases) [![GitHub License](https://img.shields.io/github/license/Kirky-X/wudaozi?style=flat-square)](LICENSE)
 
-wudaozi 是一个面向 AI agent 的多能力媒体生成 skill，把用户的模糊需求变成一条能跑的命令：**选能力 → 选 provider → 结构化 prompt → 调脚本**。
+wudaozi is a multi-capability media generation skill for AI agents that transforms users' vague requirements into executable commands: **Select capability → Select provider → Structured prompt → Run script**.
 
-| 能力         | provider（脚本）                                                | key 环境变量                          |
-| ------------ | --------------------------------------------------------------- | ------------------------------------- |
-| 文生图 t2i   | **agnes** 云端 · **kolors** 云端 · **boogu** 本地               | `AGNES_API_KEY` / `AIPING_API_KEY` / — |
-| 图生图 ti2i  | **agnes** 云端 · **boogu** 本地（⚠️ kolors 不支持）              | `AGNES_API_KEY` / —                    |
-| 图片理解     | **agnes**（agnes-2.0-flash）· **aiping**（DeepSeek-OCR-2）       | `AGNES_API_KEY` / `AIPING_API_KEY`    |
-| 视频生成     | **agnes**（agnes-video-v2.0：t2vid/ti2vid/multi/keyframes 异步轮询） | `AGNES_API_KEY`                   |
+| Capability | Provider (script) | Key Environment Variables |
+|------------|-------------------|---------------------------|
+| Text-to-image t2i | **agnes** cloud · **kolors** cloud · **boogu** local | `AGNES_API_KEY` / `AIPING_API_KEY` / — |
+| Image-to-image ti2i | **agnes** cloud · **boogu** local (⚠️ kolors not supported) | `AGNES_API_KEY` / — |
+| Image understanding | **agnes** (agnes-2.0-flash) · **aiping** (DeepSeek-OCR-2) | `AGNES_API_KEY` / `AIPING_API_KEY` |
+| Video generation | **agnes** (agnes-video-v2.0: t2vid/ti2vid/multi/keyframes async polling) | `AGNES_API_KEY` |
 
-所有云端 provider 失败均显式报错，不自动 fallback（避免画质/风格跳变让用户困惑）。完整路由表与流程文档见 [SKILL.md](SKILL.md)。
+All cloud providers report errors explicitly without automatic fallback (to avoid confusing users with style/quality jumps). For complete routing table and flow documentation, see [SKILL.md](SKILL.md).
 
-## 安装
+## Installation
 
-### 方式一：通过 `skills` 包安装（推荐）
+### Method 1: Install via `skills` package (Recommended)
 
-需 [Node.js](https://nodejs.org/) 18+ 和 `skills` npm 包(v1.5.12+)。`skills` 是 open agent skills 生态的 CLI，支持 68+ agents(Claude Code / Trae / Cursor / Codex / OpenCode 等)。
+Requires [Node.js](https://nodejs.org/) 18+ and `skills` npm package (v1.5.12+). `skills` is the CLI for open agent skills ecosystem, supporting 68+ agents (Claude Code / Trae / Cursor / Codex / OpenCode etc.).
 
 ```bash
-# 安装到 Claude Code
+# Install to Claude Code
 npx skills add Kirky-X/wudaozi --agent claude-code -y
 
-# 安装到 Trae
+# Install to Trae
 npx skills add Kirky-X/wudaozi --agent trae -y
 
-# 列出仓库中可被发现的所有 skills（不安装）
+# List all discoverable skills in repository (without installing)
 npx skills add https://github.com/Kirky-X/wudaozi.git --list
 ```
 
-> `npx skills add` 失败时，可从 [Releases](https://github.com/Kirky-X/wudaozi/releases) 手动下载 `wudaozi.skill`（zip 格式），解压后把 `SKILL.md` + `references/` + `scripts/` 复制到 agent skills 目录。
+> When `npx skills add` fails, you can manually download `wudaozi.skill` (zip format) from [Releases](https://github.com/Kirky-X/wudaozi/releases), extract it, and copy `SKILL.md` + `references/` + `scripts/` to the agent skills directory.
 
-### 方式二：传统 git clone
+### Method 2: Traditional git clone
 
 ```bash
 git clone https://github.com/Kirky-X/wudaozi.git
-# 将 SKILL.md + references/ + scripts/ 复制到 agent skills 目录
+# Copy SKILL.md + references/ + scripts/ to agent skills directory
 #   Claude Code:  ~/.claude/skills/wudaozi/
 #   Trae:         ~/.trae-cn/skills/wudaozi/
 ```
 
-### 配置 API key（云端 provider 必需）
+### Configure API keys (required for cloud providers)
 
-按要用的 provider 导出对应环境变量（key 不入代码、不入 git，仅本地环境变量）：
+Export the corresponding environment variables based on the provider you want to use (keys are not stored in code or git, only as local environment variables):
 
 ```bash
-export AGNES_API_KEY=agn-xxxxxxxx      # agnes 出图/理解/视频，从 agnes-ai.com 控制台获取
-export AIPING_API_KEY=QC-xxxxxxxx      # kolors 文生图 / DeepSeek-OCR-2 图片理解，从 aiping.cn 获取
+export AGNES_API_KEY=agn-xxxxxxxx      # agnes image generation/understanding/video, get from agnes-ai.com console
+export AIPING_API_KEY=QC-xxxxxxxx      # kolors text-to-image / DeepSeek-OCR-2 image understanding, get from aiping.cn
 
-# 验证（5 个脚本各自的自检，不打网络）
+# Verify (5 scripts self-check, no network calls)
 python3 scripts/agnes.py  __selfcheck__
 python3 scripts/kolors.py __selfcheck__
 python3 scripts/vision.py __selfcheck__
 python3 scripts/video.py  __selfcheck__
 ```
 
-未配置任何 key 时，出图可走 boogu 本地（需 GPU）；云端 provider 之间相互独立，不自动 fallback。
+When no keys are configured, image generation can use boogu locally (requires GPU); cloud providers are independent of each other without automatic fallback.
 
-## 快速开始
+## Quick Start
 
-### 文生图 · agnes 云端（无需 GPU）
+### Text-to-image · agnes cloud (no GPU required)
 
 ```bash
-# 输出到 $PWD/agnes-output/
-AGNES_API_KEY=agn-xxx python3 scripts/agnes.py t2i -i "一只在月光下的橘猫，电影感，高细节"
-AGNES_API_KEY=agn-xxx python3 scripts/agnes.py t2i -i "..." --aspect 9:16   # 竖屏壁纸
+# Output to $PWD/agnes-output/
+AGNES_API_KEY=agn-xxx python3 scripts/agnes.py t2i -i "An orange cat under moonlight, cinematic, high detail"
+AGNES_API_KEY=agn-xxx python3 scripts/agnes.py t2i -i "..." --aspect 9:16   # Vertical wallpaper
 ```
 
-### 文生图 · kolors 云端（agnes 限流时备选，⚠️ 仅 t2i）
+### Text-to-image · kolors cloud (alternative when agnes is rate-limited, ⚠️ t2i only)
 
 ```bash
 AIPING_API_KEY=QC-xxx python3 scripts/kolors.py t2i -i "..." --aspect 16:9
 ```
 
-### 文生图/图生图 · boogu 本地（需 CUDA）
+### Text-to-image/Image-to-image · boogu local (requires CUDA)
 
 ```bash
-python3 scripts/boogu.py __selfcheck__                                    # 自检（不依赖 GPU）
-python3 scripts/boogu.py t2i -i "..."                                     # 文生图 base+bf16+1:1
-python3 scripts/boogu.py t2i -i "..." --turbo --aspect 9:16               # turbo 4 步快约 10×
-python3 scripts/boogu.py ti2i -i "把背景换成沙滩" --input photo.jpg        # 图生图
-python3 scripts/boogu.py t2i -i "..." --dry-run                           # 调试（无 GPU 时只看命令）
+python3 scripts/boogu.py __selfcheck__                                    # Self-check (no GPU dependency)
+python3 scripts/boogu.py t2i -i "..."                                     # Text-to-image base+bf16+1:1
+python3 scripts/boogu.py t2i -i "..." --turbo --aspect 9:16               # Turbo 4-step, ~10x faster
+python3 scripts/boogu.py ti2i -i "Change background to beach" --input photo.jpg        # Image-to-image
+python3 scripts/boogu.py t2i -i "..." --dry-run                           # Debug (view command without GPU)
 ```
 
-### 图片理解（VLM）
+### Image Understanding (VLM)
 
 ```bash
-# agnes 通识描述（本地图自动转 base64，实测 agnes 接受 data URI）
-AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image photo.jpg -q "这张图里有什么"
+# agnes general description (local images automatically converted to base64, agnes accepts data URI)
+AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image photo.jpg -q "What's in this image"
 
-# aiping DeepSeek-OCR-2 OCR/解题
-AIPING_API_KEY=QC-xxx python3 scripts/vision.py aiping --image math.png -q "这道题怎么解答？"
+# aiping DeepSeek-OCR-2 OCR/problem solving
+AIPING_API_KEY=QC-xxx python3 scripts/vision.py aiping --image math.png -q "How to solve this problem?"
 
-# 结果存 txt（默认正文打 stdout，便于管道读取）
+# Save result to txt (default outputs to stdout for piping)
 AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image x.jpg -q "..." --output result.txt
 ```
 
-### 视频生成（异步轮询）
+### Video Generation (async polling)
 
 ```bash
-# 文生视频 5s 16:9（输出到 $PWD/video-output/）
-AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "猫在沙滩走，电影感，暖光"
+# Text-to-video 5s 16:9 (output to $PWD/video-output/)
+AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "Cat walking on beach, cinematic, warm light"
 
-# 3s 短视频试构图
+# 3s short video for composition testing
 AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "..." --duration 3s
 
-# 图生视频（首帧图必须是公网 URL，不支持 base64）
-AGNES_API_KEY=agn-xxx python3 scripts/video.py ti2vid -i "镜头缓慢推进" --image https://x/a.png
+# Image-to-video (first frame image must be public URL, base64 not supported)
+AGNES_API_KEY=agn-xxx python3 scripts/video.py ti2vid -i "Slow camera push-in" --image https://x/a.png
 
-# 多图融合（multi）/ 关键帧过渡（keyframes）：≥2 张公网图
-AGNES_API_KEY=agn-xxx python3 scripts/video.py multi -i "从场景 A 变到场景 B" \
+# Multi-image fusion (multi) / Keyframe transition (keyframes): ≥2 public images
+AGNES_API_KEY=agn-xxx python3 scripts/video.py multi -i "Transform from scene A to scene B" \
     --images https://x/a.png https://x/b.png
-AGNES_API_KEY=agn-xxx python3 scripts/video.py keyframes -i "保持人物一致，视角推近" \
+AGNES_API_KEY=agn-xxx python3 scripts/video.py keyframes -i "Maintain character consistency, push-in perspective" \
     --images https://x/a.png https://x/b.png
 ```
 
-## boogu 模型矩阵（2×2×2 = 8 组）
+## boogu Model Matrix (2×2×2 = 8 configurations)
 
-| 模式 | turbo | 量化 | 模型                             |
-| ---- | ----- | ---- | -------------------------------- |
-| t2i  | base  | bf16 | `Boogu-Image-0.1-Base`           |
-| t2i  | base  | fp8  | `Boogu-Image-0.1-Base-fp8`       |
-| t2i  | turbo | bf16 | `Boogu-Image-0.1-Turbo`          |
-| t2i  | turbo | fp8  | `Boogu-Image-0.1-Turbo-fp8`      |
-| ti2i | base  | bf16 | `Boogu-Image-0.1-Edit`           |
-| ti2i | base  | fp8  | `Boogu-Image-0.1-Edit-fp8`       |
-| ti2i | turbo | bf16 | `Boogu-Image-0.1-Edit-Turbo`     |
-| ti2i | turbo | fp8  | `Boogu-Image-0.1-Edit-Turbo-fp8` |
+| Mode | turbo | Quantization | Model |
+|------|-------|--------------|-------|
+| t2i | base | bf16 | `Boogu-Image-0.1-Base` |
+| t2i | base | fp8 | `Boogu-Image-0.1-Base-fp8` |
+| t2i | turbo | bf16 | `Boogu-Image-0.1-Turbo` |
+| t2i | turbo | fp8 | `Boogu-Image-0.1-Turbo-fp8` |
+| ti2i | base | bf16 | `Boogu-Image-0.1-Edit` |
+| ti2i | base | fp8 | `Boogu-Image-0.1-Edit-fp8` |
+| ti2i | turbo | bf16 | `Boogu-Image-0.1-Edit-Turbo` |
+| ti2i | turbo | fp8 | `Boogu-Image-0.1-Edit-Turbo-fp8` |
 
-- **t2i / ti2i**：文生图 / 图生图（编辑）
-- **base / turbo**：50 步 CFG 高质量 / 4 步 DMD 快速
-- **bf16 / fp8**：非量化 / 量化（省约 50% 显存）
+- **t2i / ti2i**: Text-to-image / Image-to-image (editing)
+- **base / turbo**: 50-step CFG high quality / 4-step DMD fast
+- **bf16 / fp8**: Non-quantized / Quantized (~50% VRAM savings)
 
-脚本按 `(mode, turbo, quantized)` 自动选模型与官方入口脚本，并填充对应默认参数。
+Scripts automatically select model and official entry script based on `(mode, turbo, quantized)`, and fill corresponding default parameters.
 
-## 结构化 Prompt
+## Structured Prompts
 
-需求通常不完整。按能力分维度结构化（详见 [`references/prompt-template.md`](references/prompt-template.md)）：
+Requirements are usually incomplete. Structure by capability dimensions (see [`references/prompt-template.md`](references/prompt-template.md) for details):
 
-| 能力     | 结构                                                             |
-| -------- | ---------------------------------------------------------------- |
-| 文生图   | 主体 → 动作 → 背景 → 构图 → 光线 → 风格 → 画质（**7 维**）       |
-| 图生图   | 改变要求 → 新风格 → 增删元素 → **保留元素**（改变+保留）         |
-| 视频     | 主体 → 动作 → 场景 → 镜头运动 → 光线 → 风格（**6 维** + 运动描述）|
-| 图片理解 | 角色 → 任务 → 上下文 → 要求 → 输出格式（**5 段式**）             |
+| Capability | Structure |
+|------------|-----------|
+| Text-to-image | Subject → Action → Background → Composition → Lighting → Style → Quality (**7 dimensions**) |
+| Image-to-image | Change requirements → New style → Add/remove elements → **Preserved elements** (change + preserve) |
+| Video | Subject → Action → Scene → Camera movement → Lighting → Style (**6 dimensions** + motion description) |
+| Image understanding | Character → Task → Context → Requirements → Output format (**5-segment**) |
 
-## 关键约束
+## Key Constraints
 
-1. **能力边界**：本技能只做生成与理解。视频/音频剪辑、3D 模型、PS 类精修合成（抠图/调色/拼接）不在范围。
-2. **kolors 仅 t2i**：kolors 硬件约束只支持文生图，**不支持图生图**（CLI 直接拒绝 ti2i）。图生图走 agnes/boogu。
-3. **视频 num_frames 须 8n+1**（81/121/241/441），≤441；frame_rate 1-60。入口校验拒绝，用 `--duration` 预设自动满足。
-4. **视频 ti2vid `--image` / multi·keyframes `--images` 只接受公网 URL**（文档明确，不支持 base64）；本地图先传图床/OSS。multi/keyframes 至少 2 张（单张走 ti2vid）。
-5. **boogu GPU 必需**：boogu 真出图需 CUDA。无 GPU 环境只能 `--dry-run` 或 `--device cpu`（极慢）；要真出图请走 agnes/kolors。
-6. **boogu 模型本地可用性**：本机已下载 `Base` + `Turbo`（T2I 非量化）。其余 6 组需用户下载到 `~/software/Boogu-Image/models/`；脚本会探测缺失并报错。
-7. **分辨率**：boogu 模型原生最大 2K（2048），所有宽高必须 16 对齐（脚本自动处理）。agnes/kolors 是云端黑盒，size 清单未知，HTTP 400 时换 `--aspect` 预设。
-8. **失败不 fallback**：所有云端 provider 失败均显式报错并退出，由用户决定重试或切 provider。
+1. **Capability boundary**: This skill only handles generation and understanding. Video/audio editing, 3D models, PS-like fine retouching (matting/color grading/compositing) are out of scope.
+2. **kolors t2i only**: kolors hardware constraints only support text-to-image, **not image-to-image** (CLI directly rejects ti2i). For image-to-image, use agnes/boogu.
+3. **Video num_frames must be 8n+1** (81/121/241/441), ≤441; frame_rate 1-60. Entry validation rejects invalid values; use `--duration` presets for automatic compliance.
+4. **Video ti2vid `--image` / multi·keyframes `--images` only accept public URLs** (explicitly documented, base64 not supported); upload local images to image hosting/OSS first. multi/keyframes require ≥2 images (single image uses ti2vid).
+5. **boogu GPU required**: boogu actual image generation requires CUDA. GPU-less environments can only use `--dry-run` or `--device cpu` (very slow); for actual generation, use agnes/kolors.
+6. **boogu model local availability**: Local machine has `Base` + `Turbo` downloaded (T2I non-quantized). The other 6 configurations require user download to `~/software/Boogu-Image/models/`; scripts detect missing models and report errors.
+7. **Resolution**: boogu models natively support max 2K (2048), all widths/heights must be 16-aligned (scripts handle automatically). agnes/kolors are cloud black boxes with unknown size lists; use `--aspect` presets when encountering HTTP 400 errors.
+8. **No fallback on failure**: All cloud providers report errors explicitly and exit, letting users decide to retry or switch providers.
 
-## 默认参数（boogu 出图）
+## Default Parameters (boogu image generation)
 
-| 维度                   | base | turbo                |
-| ---------------------- | ---- | -------------------- |
-| 步数                   | 50   | 4                    |
-| text guidance          | 4.0  | 1.0                  |
-| image guidance（ti2i） | 1.0  | 1.0                  |
-| dmd_conditioning_sigma | —    | t2i=0.001 / ti2i=0.0 |
-| CFG                    | 启用 | 关闭（DMD 学生推理） |
+| Dimension | base | turbo |
+|-----------|------|-------|
+| Steps | 50 | 4 |
+| text guidance | 4.0 | 1.0 |
+| image guidance (ti2i) | 1.0 | 1.0 |
+| dmd_conditioning_sigma | — | t2i=0.001 / ti2i=0.0 |
+| CFG | Enabled | Disabled (DMD student inference) |
 
-视频时长预设（num_frames, frame_rate，均 8n+1）：`3s`=(81,24) · `5s`=(121,24) · `10s`=(241,24) · `18s`=(441,24)。
-视频分辨率预设（W,H）：`16:9`=(1152,768) · `9:16`=(768,1152) · `1:1`=(960,960) · `4:3`=(1024,768) · `3:4`=(768,1024)。
+Video duration presets (num_frames, frame_rate, all 8n+1): `3s`=(81,24) · `5s`=(121,24) · `10s`=(241,24) · `18s`=(441,24).
+Video resolution presets (W,H): `16:9`=(1152,768) · `9:16`=(768,1152) · `1:1`=(960,960) · `4:3`=(1024,768) · `3:4`=(768,1024).
 
-## 文件结构
+## File Structure
 
 ```
 wudaozi/
-├── SKILL.md                       # 入口：能力×provider 矩阵 + 路由 + 流程
-├── skill.json                     # skill 元数据（name/version/tag，.skill 包携带）
+├── SKILL.md                       # Entry: capability×provider matrix + routing + flow
+├── skill.json                     # Skill metadata (name/version/tag, carried by .skill package)
 ├── scripts/
-│   ├── agnes.py                   # 出图 agnes 云端（t2i/ti2i，纯 stdlib）
-│   ├── kolors.py                  # 出图 kolors 云端（仅 t2i）
-│   ├── boogu.py                   # 出图 boogu 本地（2×2×2 矩阵路由）
-│   ├── vision.py                  # 图片理解（agnes-2.0-flash / DeepSeek-OCR-2）
-│   ├── video.py                   # 视频生成（agnes-video-v2.0 异步轮询）
-│   └── test_*.py                  # 5 脚本单元测试（mock 网络层，不打真实 API/模型）
+│   ├── agnes.py                   # agnes cloud image generation (t2i/ti2i, stdlib only)
+│   ├── kolors.py                  # kolors cloud image generation (t2i only)
+│   ├── boogu.py                   # boogu local image generation (2×2×2 matrix routing)
+│   ├── vision.py                  # Image understanding (agnes-2.0-flash / DeepSeek-OCR-2)
+│   ├── video.py                   # Video generation (agnes-video-v2.0 async polling)
+│   └── test_*.py                  # 5 script unit tests (mock network layer, no real API/model calls)
 └── references/
-    └── prompt-template.md         # 结构化 prompt 7 维度模板 + 案例（出图共用）
+    └── prompt-template.md         # Structured prompt 7-dimension template + examples (shared for image generation)
 ```
 
-## 许可证
+## License
 
 MIT

@@ -1,81 +1,81 @@
-# 结构化 Prompt 模板
+# Structured Prompt Template
 
-> 用户给的图片需求通常不完整（"画一只猫"）。本模板把模糊需求拆成 **7 个维度**，逐维补全后再拼成 Boogu `--instruction`。Boogu-Image 对中文支持良好，主推中文；英文仅在特定风格词更精确时用。
+> Users' image generation requirements are usually incomplete ("draw a cat"). This template breaks down vague requirements into **7 dimensions**, completes each dimension one by one, then assembles the Boogu `--instruction`. Boogu-Image has good support for Chinese, which is the primary language; English is used only when specific style terms are more precise.
 
-## 核心公式
+## Core Formula
 
 ```
-[主体] + [动作/神态] + [背景/环境] + [构图/视角] + [光线] + [风格/媒介] + [画质/细节]
+[Subject] + [Action/Expression] + [Background/Environment] + [Composition/Perspective] + [Lighting] + [Style/Medium] + [Quality/Detail]
 ```
 
-**顺序有意义**：主体在前、画质兜底。任一维度缺失就用下方"选项库"的合理默认填，但**必须显式列出最终 7 维**给用户确认，不要默默填。
+**Order matters**: Subject comes first, quality serves as the fallback. Any missing dimension should be filled with reasonable defaults from the "options library" below, but **you must explicitly list the complete 7 dimensions** for user confirmation — never silently fill them in.
 
 ---
 
-## 七维度选项库
+## Seven-Dimension Options Library
 
-### 1. 主体（Subject）—— 画面核心是谁/什么
+### 1. Subject — Who/what is the focal point
 
-- **人物**：年龄/性别/族裔/发型/服饰（如"一位银发老者，穿藏青长衫"）
-- **动物**：品种/毛色/姿态（如"一只橘色英短，蜷缩"）
-- **物件**：材质/年代/状态（如"一只黄铜复古怀表，表盘微微氧化"）
-- **场景**：建筑/地标/自然（如"桂林喀斯特峰林"）
-- 缺失默认：让用户补；不可空
+- **Person**: age/ethnicity/hairstyle/clothing (e.g., "a silver-haired elder in a navy blue changshan")
+- **Animal**: breed/color/pose (e.g., "an orange British Shorthair, curled up")
+- **Object**: material/era/state (e.g., "a brass vintage pocket watch, dial slightly oxidized")
+- **Scene**: architecture/landmark/nature (e.g., "Guilin karst peak forest")
+- Default if missing: ask user to provide; cannot be empty
 
-### 2. 动作/神态（Action / Expression）
+### 2. Action/Expression
 
-- 人物：微笑/沉思/奔跑/回眸/伏案
-- 动物：蜷睡/扑跃/凝视/梳理毛发
-- 静物：漂浮/散落/陈列（"柿子散落在木桌上"）
-- 缺失默认：人物→"静立凝视"；静物→"自然陈列"
+- Person: smiling/thinking/running/glancing back/studying
+- Animal: sleeping curled/pouncing/gazing/grooming
+- Still life: floating/scattered/displayed ("persimmons scattered on a wooden table")
+- Default if missing: Person → "standing still, gazing"; Still life → "natural display"
 
-### 3. 背景/环境（Background / Environment）
+### 3. Background/Environment
 
-- 自然：山峦/海面/森林/沙漠/雪原/星空
-- 室内：咖啡馆/书房/实验室/古寺
-- 抽象：纯色渐变/光斑/几何
-- 缺失默认：与主体气质匹配（国风→山水；人物→简洁虚化）
+- Natural: mountains/ocean/forest/desert/snowfield/starry sky
+- Indoor: cafe/study/lab/ancient temple
+- Abstract: solid gradient/light bokeh/geometric
+- Default if missing: Match the subject's temperament (Chinese style → landscape painting; portrait → simple bokeh)
 
-### 4. 构图/视角（Composition / View）
+### 4. Composition/Perspective
 
-- 景别：特写 / 半身 / 全身 / 远景 / 全景
-- 视角：平视 / 俯拍 / 仰拍 / 鸟瞰 / 虫眼
-- 镜头：35mm 街拍 / 85mm 人像 / 广角 / 微距
-- 构图法：三分法 / 居中对称 / 引导线 / 框架构图
-- 缺失默认：人像→"85mm 半身，三分法"；风景→"广角远景"
+- Shot size: close-up / half-body / full-body / long shot / panorama
+- Perspective: eye-level / top-down / low angle / bird's eye / worm's eye
+- Lens: 35mm street / 85mm portrait / wide-angle / macro
+- Composition rule: rule of thirds / centered symmetry / leading lines / frame composition
+- Default if missing: Portrait → "85mm half-body, rule of thirds"; Landscape → "wide-angle long shot"
 
-### 5. 光线（Lighting）—— 决定氛围
+### 5. Lighting — Determines atmosphere
 
-- 自然光：金色时刻 / 蓝色时刻 / 正午硬光 / 阴天柔光 / 月光
-- 人造光：霓虹 / 烛光 / 工业冷光 / 赛博朋克紫
-- 方向：逆光 / 侧光 / 顶光 / 伦勃朗光
-- 缺失默认：温暖场景→"金色时刻逆光"；冷调场景→"蓝色时刻侧光"
+- Natural: golden hour / blue hour / noon harsh light / overcast soft light / moonlight
+- Artificial: neon / candlelight / industrial cool light / cyberpunk purple
+- Direction: backlight / sidelight / top light / Rembrandt lighting
+- Default if missing: Warm scene → "golden hour backlight"; Cool scene → "blue hour sidelight"
 
-### 6. 风格/媒介（Style / Medium）—— 决定调性
+### 6. Style/Medium — Determines tone
 
-- 摄影质感：徕卡街拍 / 哈苏人像 / 胶片颗粒 / 电影感
-- 绘画：国风琉金 / 水墨 / 油画厚涂 / 浮世绘 / 概念艺术
-- 渲染：3D / 等距矢量 / 像素 / 低多边形
-- 缺失默认：写实→"电影感摄影"；艺术→"概念艺术"
+- Photography: Leica street / Hasselblad portrait / film grain / cinematic
+- Painting: Chinese gold-leaf / ink wash / oil painting impasto / ukiyo-e / concept art
+- Rendering: 3D / isometric vector / pixel / low-poly
+- Default if missing: Realistic → "cinematic photography"; Artistic → "concept art"
 
-### 7. 画质/细节（Quality / Detail）—— 兜底增强
+### 7. Quality/Detail — Fallback enhancement
 
-- 标准短语："高细节 / 锐利 / 8K / 杰作 / 专业级"
-- 材质强调："皮肤纹理 / 织物经纬 / 金属光泽"
-- 缺失默认：固定追加"高细节，专业级"
+- Standard phrases: "highly detailed / sharp / 8K / masterpiece / professional quality"
+- Material emphasis: "skin texture / fabric weave / metallic sheen"
+- Default if missing: Always append "highly detailed, professional quality"
 
 ---
 
-## 模板（直接套用）
+## Templates (Copy directly)
 
-### 中文模板
+### Chinese Template
 
 ```
-[主体]，[动作/神态]。背景是[背景]。[景别]，[视角]，[镜头焦段]，[构图法]。
-[光线描述]。[风格/媒介]风格，高细节，专业级画质。
+[Subject], [action/expression]. Background is [background]. [Shot size], [perspective], [lens], [composition].
+[Lighting description]. [Style/medium] style, highly detailed, professional quality.
 ```
 
-### 英文模板（特定风格词更精确时用）
+### English Template (use when specific style terms are more precise)
 
 ```
 [subject] [action], set in [background]. [shot size], [view], [lens], [composition].
@@ -84,249 +84,249 @@
 
 ---
 
-## 三个完整案例
+## Three Complete Examples
 
-### 案例 A：街拍摄影（人物）
+### Example A: Street Photography (Portrait)
 
-- 用户原话："画一个拾荒老人"
-- 七维补全：
-  1. 主体：一位满脸沧桑的老年拾荒者，皮肤黝黑，皱纹深刻
-  2. 动作：低头整理编织袋，神态疲惫而专注
-  3. 背景：城市街头，背景有垃圾桶与红绿灯
-  4. 构图：35mm 街拍，平视，三分法偏左
-  5. 光线：阴天柔光，轻微漫反射
-  6. 风格：徕卡街拍，胶片颗粒
-  7. 画质：高细节，摄影质感
-- 最终 instruction：
-  > 一位满脸沧桑的老年拾荒者，皮肤黝黑，皱纹深刻，低头整理编织袋，神态疲惫而专注。背景是城市街头，远处有垃圾桶与红绿灯。35mm 街拍景别，平视视角，三分法构图偏左。阴天柔光。徕卡街拍风格，胶片颗粒，高细节，摄影质感。
+- User's words: "draw an elderly scavenger"
+- 7-dimension completion:
+  1. Subject: An elderly scavenger with weathered skin, dark complexion, deep wrinkles
+  2. Action: Head bowed, organizing a woven bag, expression weary yet focused
+  3. Background: City street, trash cans and traffic lights in the background
+  4. Composition: 35mm street, eye-level, rule of thirds slightly left
+  5. Lighting: Overcast soft light, slight diffuse reflection
+  6. Style: Leica street photography, film grain
+  7. Quality: High detail, photographic texture
+- Final instruction:
+  > An elderly scavenger with weathered skin, dark complexion, and deep wrinkles, head bowed organizing a woven bag, expression weary yet focused. Background is a city street with trash cans and traffic lights in the distance. 35mm street shot, eye-level perspective, rule of thirds slightly left. Overcast soft light. Leica street photography style, film grain, high detail, photographic texture.
 
-### 案例 B：国风艺术（风景）
+### Example B: Chinese Art Style (Landscape)
 
-- 用户原话："桂林山水"
-- 最终 instruction（参考官方 test_base.sh 范式）：
-  > 一幅国风琉金风格的山水画作，展现了桂林山水在金光普照下的壮丽景象。远山层叠，江水如镜，山峰边缘勾勒着发光的金色线条。画面采用石青石绿岩彩与鎏金质感相结合，局部有厚涂油画笔触，空中飘浮着金色粒子，营造出梦幻朦胧而又磅礴大气的意境。
+- User's words: "Guilin landscape"
+- Final instruction (following official test_base.sh paradigm):
+  > A Chinese gold-leaf style landscape painting, depicting the magnificent scenery of Guilin mountains under golden light. Mountains layered in the distance, river like a mirror, mountain peaks outlined with glowing golden lines. The painting combines azurite and malachite mineral pigments with gilded texture, featuring oil painting impasto brushstrokes in certain areas, golden particles floating in the air, creating a dreamy, hazy, yet grand atmosphere.
 
-### 案例 C：IP 形象（产品/角色）
+### Example C: IP Character (Product/Character)
 
-- 用户原话："做一只猫头鹰 IP"
-- 七维补全后：
-  > 一只拟人化的猫头鹰 IP 形象，圆滚滚体型，戴铜框圆眼镜，穿深棕马甲，神态睿智温和。背景是温暖的旧图书馆，散落的卷轴与墨水瓶。半身特写，平视视角，居中构图。柔和暖黄侧光。皮克斯 3D 渲染风格，材质细腻，高细节，专业级概念设计。
-
----
-
-## 图生图（ti2i）—— 改变 + 保留
-
-> 图生图 prompt 心智**与文生图不同**：不是从零描述画面，而是声明「改什么 + 保什么」。agnes-image-2.1-flash 与 boogu ti2i 通用。
-
-### 核心公式
-
-```
-[改变要求] + [新风格/场景] + [需要添加或移除的元素] + [需要保留的元素]
-```
-
-**顺序有意义**：先说要改成什么样，再说不能动什么。**保留项是 ti2i 的灵魂**——没说保留，模型自由发挥会导致构图飞掉、主体变形。
-
-### 四要素选项库
-
-| 要素        | 写法                                  | 示例                                                   |
-| ----------- | ------------------------------------- | ------------------------------------------------------ |
-| 改变要求    | 动词开头，点明整体转换方向            | "改为赛博朋克夜景" / "换成水彩风格"                    |
-| 新风格/场景 | 目标调性或环境                        | "电影级赛博朋克" / "雨夜街头"                          |
-| 添加/移除   | 具体元素的增删                        | "添加霓虹招牌和湿滑路面倒影" / "移除背景路人"          |
-| 保留        | 构图/主体/布局/相机角度等不可变项     | "保留原始街道布局、相机角度和主要建筑形状"            |
-
-### 复杂编辑：视觉层次结构
-
-多元素编辑时按层次声明，避免要素冲突：
-
-```
-[主要主体：保留/改变] + [背景环境：替换] + [次要细节：增删] + [风格/光照约束]
-```
-
-示例："建在悬崖上的港口城市（保留主体），把白天改为多云日落天空（替换背景），添加数百艘小船和发光窗户（增细节），保持电影级写实风格和广角构图（约束）。"
-
-### 三个完整案例
-
-**案例 A · 风格迁移**（原话"把这张街景改成赛博朋克"）：
-> 将白天街道场景改为电影级赛博朋克夜景，添加霓虹招牌和湿滑路面倒影，同时保留原始街道布局、相机角度和主要建筑形状。
-
-**案例 B · 局部改色**（原话"把这个杯子改成橙色，别的别动"）：
-> 将主体杯子的颜色改为橙色，同时保留原始构图、背景环境、光照方向和其余所有元素不变。
-
-**案例 C · 背景替换**（原话"换背景成海边"）：
-> 将背景替换为热带海滩场景，添加海浪和远处帆船作为环境元素，同时保持人物姿态、服装、相机角度和光照方向不变。
+- User's words: "make an owl IP"
+- After 7-dimension completion:
+  > An anthropomorphized owl IP character, round body, wearing copper-framed round glasses, dressed in a dark brown vest, expression wise and gentle. Background is a warm old library with scattered scrolls and ink bottles. Half-body close-up, eye-level perspective, centered composition. Soft warm sidelight. Pixar 3D rendering style, delicate material, high detail, professional concept design.
 
 ---
 
-## 特殊场景模板（logo / IP / 产品衍生图）
+## Image-to-image (ti2i) — Change + Preserve
 
-> 三类都是 **t2i 子任务，走同一 Boogu-Image t2i 后端**，仅 prompt 模板不同。Boogu 不绑定任何外部 API。
+> Image-to-image prompt mindset **differs from text-to-image**: instead of describing a scene from scratch, it declares "what to change + what to preserve". Works with both agnes-image-2.1-flash and boogu ti2i.
 
-### § logo · 品牌 logo / 图标 / 主视觉
-
-**一次一问澄清优先级**：用途（品牌主视觉 / App 图标 / 社交头像）→ 风格（极简几何 / 手绘 / 字标）→ 调性（温暖 / 冷峻 / 活力）。
-
-**模板公式**：
+### Core Formula
 
 ```
-[核心图形意象]，[品牌调性形容词]。居中对称构图，[纯色/极简]背景。
-[极简矢量/扁平/手绘]风格，[品牌主色系]，均匀柔光无强阴影，高细节，专业级品牌设计。
+[Change requirements] + [New style/scenery] + [Elements to add or remove] + [Elements to preserve]
 ```
 
-**完整案例**："做个咖啡品牌 logo" →
+**Order matters**: First state what the result should look like, then state what cannot change. **Preserved elements are the soul of ti2i** — without preservation, the model has free rein, causing composition drift and subject deformation.
 
-> 一枚咖啡豆与咖啡杯融合的几何图形标志，温暖手作调性。居中对称构图，纯米白背景。极简矢量扁平化风格，温暖大地色系（棕、米、橙），均匀柔光无强阴影，高细节，专业级品牌设计。
+### Four-Element Options Library
 
-- 推荐：`t2i base --aspect 1:1`
-- ⚠️ 输出是**插画感 logo**，非可缩放矢量源文件，需后期矢量化（Illustrator / Figma 描摹）。
+| Element | How to write | Example |
+|---------|-------------|---------|
+| Change requirements | Verb-led, specify overall transformation direction | "Change to cyberpunk nightscape" / "Switch to watercolor style" |
+| New style/scenery | Target tone or environment | "Cinematic cyberpunk" / "Rainy night street" |
+| Add/Remove | Specific element additions or deletions | "Add neon signs and wet road reflections" / "Remove background pedestrians" |
+| Preserve | Composition/subject/layout/camera angle — invariant items | "Preserve original street layout, camera angle, and main building shapes" |
 
-### § IP · 拟人形象 / 吉祥物 / 角色设计
+### Complex Edits: Visual Hierarchy
 
-**一次一问澄清优先级**：物种/原型（动物 / 虚构 / 人物化）→ 性格（睿智 / 活泼 / 高冷）→ 渲染风（皮克斯 3D / 潮玩盲盒 / 平面矢量）。
-
-**模板公式**（基于案例 C 扩展）：
-
-```
-一只拟人化的[物种] IP 形象，[体型]，[服饰/配件]，神态[性格词]。
-背景是[与角色气质匹配的简洁场景]。半身特写，平视视角，居中构图。
-柔和[暖色/冷色]侧光。[皮克斯3D/潮玩盲盒/平面矢量]渲染风格，材质细腻，高细节，专业级概念设计。
-```
-
-- 推荐：`t2i base --aspect 3:4` 或 `1:1`
-- 衍生提示：要"角色三视图" → 在主体维加"正面/侧面/背面三视图排列"
-
-### § product · 产品图 / 衍生图 / 周边视觉
-
-**一次一问澄清优先级**：用途（电商主图 / 生活方式场景 / 周边海报）→ 调性（高级感 / 清新 / 国风）→ 背景（纯色 / 场景 / 渐变）。
-
-**模板公式**：
+For multi-element edits, declare in layers to avoid element conflicts:
 
 ```
-[产品主体，含材质/颜色/状态]，[直立陈列/使用中]于[背景]。
-居中构图，[景别]。[柔光箱侧光/自然光]，强调[瓶身/材质]光影。
-[电商产品摄影/生活方式]风格，[调性]，高细节，[材质纹理]。
+[Primary subject: preserve/change] + [Background environment: replace] + [Secondary details: add/remove] + [Style/lighting constraints]
 ```
 
-**完整案例**："给这款香水出产品图" →
+Example: "Port city built on cliffs (preserve subject), change daytime to cloudy sunset sky (replace background), add hundreds of small boats and glowing windows (add detail), maintain cinematic realism and wide-angle composition (constraints)."
 
-> 一瓶磨砂玻璃香水，金色瓶盖，直立陈列于浅灰渐变无缝背景上。居中构图，半身特写。柔光箱侧光，强调瓶身磨砂质感与金色光影。电商产品摄影风格，高级感，高细节，玻璃与金属纹理清晰。
+### Three Complete Examples
 
-- 推荐：`t2i base --aspect 4:3` 或 `1:1`
-- 衍生提示：要"生活方式场景图" → 背景维换为"木质桌面，散落柑橘与薄荷叶，窗外自然光"
+**Example A · Style Transfer** (original: "turn this street scene into cyberpunk"):
+> Transform the daytime street scene into a cinematic cyberpunk nightscape, adding neon signs and wet road reflections, while preserving the original street layout, camera angle, and main building shapes.
+
+**Example B · Partial Recoloring** (original: "change this cup to orange, keep everything else"):
+> Change the subject cup's color to orange, while preserving the original composition, background environment, lighting direction, and all other elements unchanged.
+
+**Example C · Background Replacement** (original: "change background to beach"):
+> Replace the background with a tropical beach scene, adding ocean waves and distant sailboats as environmental elements, while maintaining the person's pose, clothing, camera angle, and lighting direction unchanged.
 
 ---
 
-## 负向提示词（`--negative-instruction`）
+## Special Scenario Templates (Logo / IP / Product Derivatives)
 
-CFG 排除项。通用模板：
+> All three are **t2i subtasks using the same Boogu-Image t2i backend**, only prompt templates differ. Boogu doesn't bind to any external API.
+
+### § Logo · Brand logo / Icon / Hero visual
+
+**One question at a time to clarify priority**: Purpose (brand hero visual / App icon / social avatar) → Style (minimalist geometric / hand-drawn / wordmark) → Tone (warm / cool / energetic).
+
+**Template formula**:
 
 ```
-模糊, 低品质, 变形, 多余的手指, 透视错误, 水印, 文字, 签名, 过曝, JPEG 伪影
+[Core graphic imagery], [brand tone adjective]. Centered symmetric composition, [solid/minimalist] background.
+[Minimalist vector/flat/hand-drawn] style, [brand primary color palette], uniform soft light with no harsh shadows, high detail, professional brand design.
 ```
 
-按场景补充：
+**Complete example**: "make a coffee brand logo" →
 
-- 人物：畸形手, 不对称眼睛, 错乱牙齿
-- 风景：突兀元素, 人工感, 过度饱和
-- 产品：背景杂物, 反光过度
+> A geometric graphic mark fusing a coffee bean and coffee cup, warm handcrafted tone. Centered symmetric composition, pure cream-white background. Minimalist vector flat style, warm earthy color palette (brown, cream, orange), uniform soft light with no harsh shadows, high detail, professional brand design.
+
+- Recommended: `t2i base --aspect 1:1`
+- ⚠️ Output is an **illustration-style logo**, not a scalable vector source file; requires post-processing vectorization (Illustrator / Figma tracing).
+
+### § IP · Anthropomorphized character / Mascot / Character design
+
+**One question at a time to clarify priority**: Species/prototype (animal / fictional / personified) → Personality (wise / lively / aloof) → Rendering style (Pixar 3D / designer toy blind box / flat vector).
+
+**Template formula** (expanded from Example C):
+
+```
+An anthropomorphized [species] IP character, [body type], [clothing/accessories], expression [personality descriptor].
+Background is [simple scene matching the character's temperament]. Half-body close-up, eye-level perspective, centered composition.
+Soft [warm/cool] sidelight. [Pixar 3D / designer toy blind box / flat vector] rendering style, delicate material, high detail, professional concept design.
+```
+
+- Recommended: `t2i base --aspect 3:4` or `1:1`
+- Derivative tip: Want "character turnaround view" → add "front/side/back three-view arrangement" to the subject dimension
+
+### § Product · Product image / Derivative / Merch visual
+
+**One question at a time to clarify priority**: Purpose (e-commerce hero image / lifestyle scene / merch poster) → Tone (premium / fresh / Chinese style) → Background (solid color / scene / gradient).
+
+**Template formula**:
+
+```
+[Product subject with material/color/state], [standing display/in use] at [background].
+Centered composition, [shot size]. [Softbox sidelight / natural light], emphasizing [bottle/material] light and shadow.
+[E-commerce product photography / lifestyle] style, [tone], high detail, [material texture].
+```
+
+**Complete example**: "create a product image for this perfume" →
+
+> A frosted glass perfume bottle with a gold cap, standing upright on a light gray gradient seamless background. Centered composition, half-body close-up. Softbox sidelight emphasizing the frosted bottle texture and golden light and shadow. E-commerce product photography style, premium tone, high detail, clear glass and metal textures.
+
+- Recommended: `t2i base --aspect 4:3` or `1:1`
+- Derivative tip: Want "lifestyle scene image" → change background dimension to "wooden tabletop, scattered citrus and mint leaves, natural light from window"
 
 ---
 
-## 检查清单（生成前必过）
+## Negative Prompts (`--negative-instruction`)
 
-- [ ] 七维是否齐全？哪几维是默认填的，是否需用户确认？
-- [ ] 用户指定的硬约束（某颜色、某构图、某人）是否已写入？
-- [ ] 是否与用户预期媒介一致（摄影 ≠ 绘画 ≠ 3D）？
-- [ ] 长度是否在 30–200 字之间？（过短信息不足，过长模型发散）
-- [ ] 负向提示是否补了通用项？
+CFG exclusion items. General template:
+
+```
+blurry, low quality, deformed, extra fingers, perspective errors, watermark, text, signature, overexposed, JPEG artifacts
+```
+
+Add by scenario:
+
+- Portrait: malformed hands, asymmetric eyes, misaligned teeth
+- Landscape: jarring elements, artificial feel, oversaturation
+- Product: background clutter, excessive reflections
 
 ---
 
-## 视频生成（video）—— 动态而非静态
+## Checklist (Must review before generation)
 
-> 视频 prompt 心智**与出图不同**：出图描述"一瞬间"，视频描述"一段时间的演变"。核心是「主体动 + 镜头动 + 什么不能动」。agnes-video-v2.0 通用。
-
-### 核心公式（文生视频）
-
-```
-[主体] + [动作] + [场景] + [镜头运动] + [光线] + [风格]
-```
-
-示例："A young astronaut walking across a red desert planet, dust blowing in the wind, slow cinematic tracking shot, dramatic sunset lighting, realistic sci-fi style"
-
-### 运动描述技巧（视频灵魂）
-
-视频最易翻车的是「该动的不动、不该动的乱动」。**显式声明哪些动、哪些稳定**：
-
-```
-[动的部分：主体动作 + 环境动态] + while keeping [稳定的部分：身份/外观/构图]
-```
-
-示例："Animate the character with subtle breathing motion, hair moving gently in the wind, background lights flickering softly, **while keeping the face and outfit consistent**"
-
-### 按模式分写
-
-| 模式             | prompt 重点                              | 示例                                                                                                                       |
-| ---------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| t2vid 文生视频   | 6 维齐全，强调镜头运动 + 时间演变        | "猫在沙滩漫步，海浪轻拍，镜头缓慢推进，金色夕阳暖光，电影级写实"                                                           |
-| ti2vid 图生视频  | 描述**单图如何动起来**，声明保持一致的部分 | "The woman slowly turns around and looks back at the camera, natural facial expression, cinematic camera movement"        |
-| multi 多图视频   | 描述**多图之间**的关系与场景过渡         | "Use the first image as the starting scene and the second image as the target scene. Create a smooth transformation"      |
-| keyframes 关键帧 | 描述**帧间过渡**关系，保持身份/视角一致   | "Create a smooth transition from the first keyframe to the second, maintaining character identity and consistent camera angle" |
-
-> 四模式对应 `video.py` 的 `t2vid`/`ti2vid`/`multi`/`keyframes`：multi 多图融合、keyframes 关键帧过渡，都走 `--images URL1 URL2`（至少 2 张公网图）。两者 `--images` 都**只接受公网 URL**（视频生成不支持 base64）。
-
-### 视频检查清单
-
-- [ ] 是否有明确的镜头运动（推进/拉远/平移/环绕/固定）？
-- [ ] 是否声明了"哪些动 + 哪些稳定"（避免主体漂移）？
-- [ ] 时长是否匹配内容（3s 试构图 / 5s 默认 / 10s 叙事 / 18s 长镜头）？
-- [ ] 是否先用短时长试构图，满意再加长（视频生成慢且贵）？
+- [ ] Are all 7 dimensions complete? Which dimensions used defaults, and do they need user confirmation?
+- [ ] Are users' specified hard constraints (specific color, composition, person) included?
+- [ ] Is the intended medium consistent (photography ≠ painting ≠ 3D)?
+- [ ] Is the length between 30-200 characters? (Too short = insufficient info, too long = model diverges)
+- [ ] Are negative prompts filled with general items?
 
 ---
 
-## 图片理解（vision）—— 角色 + 任务 + 输出格式
+## Video Generation (video) — Dynamic, not static
 
-> 理解/识图/OCR 的 prompt 心智**与生成不同**：不是描述画面，而是**给模型一个角色 + 明确任务 + 指定输出格式**。agnes-2.0-flash 与 DeepSeek-OCR-2 通用。
+> Video prompt mindset **differs from image generation**: image generation describes "a single moment", video describes "evolution over time". The core is "subject moves + camera moves + what stays stable". Works with agnes-video-v2.0.
 
-### 核心公式
+### Core Formula (text-to-video)
 
 ```
-[角色] + [任务] + [上下文] + [要求] + [输出格式]
+[Subject] + [Action] + [Scene] + [Camera movement] + [Lighting] + [Style]
 ```
 
-示例："You are an image analysis assistant. Analyze the provided image, summarize the key information, identify potential issues, and return the result in a structured table."
+Example: "A young astronaut walking across a red desert planet, dust blowing in the wind, slow cinematic tracking shot, dramatic sunset lighting, realistic sci-fi style"
 
-### 五要素速查
+### Motion Description Tips (Soul of video)
 
-| 要素     | 作用                         | 示例                                                       |
-| -------- | ---------------------------- | ---------------------------------------------------------- |
-| 角色     | 设定专家视角，影响分析深度   | "你是一位资深 UI 设计师" / "你是 OCR 专家"                 |
-| 任务     | 点明要做什么                 | "分析这张截图的 UI 问题" / "识别图中文字并逐字输出"        |
-| 上下文   | 给背景，避免泛泛而谈         | "这是用户反馈卡顿的页面" / "这是一道初中数学题"            |
-| 要求     | 约束关注重点                 | "重点关注按钮的可点击区域" / "保留原始公式符号"            |
-| 输出格式 | 指定结构化形态               | "用 markdown 表格输出" / "分步骤给解法" / "JSON 格式"      |
+The most common video failure is "things that should move don't, things that shouldn't move do". **Explicitly declare what moves and what stays stable**:
 
-### 三个完整案例
+```
+[Moving parts: subject action + environmental dynamics] + while keeping [stable parts: identity/appearance/composition]
+```
 
-**案例 A · UI 走查**：
-> 你是一位资深 UI 设计师。分析这张 App 截图，识别主要 UI 元素，指出可能的可用性问题，并给出改进建议。重点关注按钮可点击区域和视觉层级。用 markdown 表格输出：元素 | 问题 | 建议。
+Example: "Animate the character with subtle breathing motion, hair moving gently in the wind, background lights flickering softly, **while keeping the face and outfit consistent**"
 
-**案例 B · OCR 解题**：
-> 你是 OCR 和数学解题专家。识别图中的数学题（保留原始公式符号），给出完整解题步骤。这是初中几何题。输出格式：原题 → 已知条件 → 求解 → 步骤详解 → 答案。
+### By Mode
 
-**案例 C · 内容识别**：
-> 你是图像分析助手。描述这张图的主体、场景、氛围和可能的拍摄意图。用三段式输出：主体描述 / 场景氛围 / 拍摄意图推测。
+| Mode | Prompt focus | Example |
+|------|-------------|---------|
+| t2vid text-to-video | All 6 dimensions, emphasize camera movement + time evolution | "Cat walking on beach, waves gently lapping, slow cinematic push-in, golden sunset warm light, cinematic realism" |
+| ti2vid image-to-video | Describe **how the single image comes alive**, declare what stays consistent | "The woman slowly turns around and looks back at the camera, natural facial expression, cinematic camera movement" |
+| multi multi-image video | Describe **relationships between images** and scene transitions | "Use the first image as the starting scene and the second image as the target scene. Create a smooth transformation" |
+| keyframes keyframe | Describe **inter-frame transitions**, maintain identity/perspective consistency | "Create a smooth transition from the first keyframe to the second, maintaining character identity and consistent camera angle" |
 
-### ⚠️ 图像输入约束（避免 silent 失败）
+> The four modes correspond to `video.py`'s `t2vid`/`ti2vid`/`multi`/`keyframes`: multi = multi-image fusion, keyframes = keyframe transition, both use `--images URL1 URL2` (at least 2 public images). Both `--images` only accept **public URLs** (video generation does not support base64).
 
-- **URL 必须可公开访问**：需登录/认证/防盗链的 URL，模型读不到（通常不报错，只会返回"无法识别"或臆测内容）
-- **本地图片走 base64**：vision.py 自动转 data URI，绕过公开访问限制（agnes/aiping 实测都接受 data URI）
-- **标准格式**：JPG/JPEG/PNG/WebP；截图/UI 图建议在 prompt 里补文本说明点明关注重点
-- **provider 选型**：OCR/公式/解题 → aiping DeepSeek-OCR-2；通识描述/UI 分析 → agnes-2.0-flash
+### Video Checklist
 
-### 理解检查清单
+- [ ] Is there a clear camera movement (push-in/pull-out/pan/orbit/static)?
+- [ ] Did you declare "what moves + what stays stable" (to avoid subject drift)?
+- [ ] Is the duration matched to content (3s test composition / 5s default / 10s narrative / 18s long take)?
+- [ ] Did you test with short duration first, then extend when satisfied (video generation is slow and expensive)?
 
-- [ ] 是否给了角色（影响分析深度）？
-- [ ] 任务是否具体可答（避免"描述一下"空泛指令）？
-- [ ] 是否指定了输出格式（表格/步骤/JSON/三段式）？
-- [ ] 图像输入是否避开了私有 URL（本地走 base64，远程确认公开可访问）？
+---
+
+## Image Understanding (vision) — Role + Task + Output format
+
+> Understanding/OCR prompt mindset **differs from generation**: instead of describing a scene, it **gives the model a role + clear task + specified output format**. Works with both agnes-2.0-flash and DeepSeek-OCR-2.
+
+### Core Formula
+
+```
+[Role] + [Task] + [Context] + [Requirements] + [Output format]
+```
+
+Example: "You are an image analysis assistant. Analyze the provided image, summarize the key information, identify potential issues, and return the result in a structured table."
+
+### Five-Element Quick Reference
+
+| Element | Purpose | Example |
+|---------|---------|---------|
+| Role | Sets expert perspective, affects analysis depth | "You are a senior UI designer" / "You are an OCR expert" |
+| Task | Specifies what to do | "Analyze UI issues in this screenshot" / "Recognize text in the image and output verbatim" |
+| Context | Provides background, avoids vague responses | "This is a page where users report lag" / "This is a middle school math problem" |
+| Requirements | Constrains focus areas | "Focus on button clickable areas" / "Preserve original formula symbols" |
+| Output format | Specifies structured form | "Output in markdown table" / "Give solution step by step" / "JSON format" |
+
+### Three Complete Examples
+
+**Example A · UI Review**:
+> You are a senior UI designer. Analyze this app screenshot, identify main UI elements, point out potential usability issues, and provide improvement suggestions. Focus on button clickable areas and visual hierarchy. Output in markdown table: Element | Issue | Suggestion.
+
+**Example B · OCR Problem Solving**:
+> You are an OCR and math problem solving expert. Recognize the math problem in the image (preserve original formula symbols), provide complete solution steps. This is a middle school geometry problem. Output format: Original problem → Given conditions → Find → Step-by-step solution → Answer.
+
+**Example C · Content Recognition**:
+> You are an image analysis assistant. Describe the subject, scene, atmosphere, and possible shooting intent of this image. Output in three-part format: Subject description / Scene atmosphere / Shooting intent speculation.
+
+### ⚠️ Image Input Constraints (Avoid silent failure)
+
+- **URLs must be publicly accessible**: URLs requiring login/authentication/hotlink protection cannot be read by models (usually no error, just returns "unable to recognize" or guessed content)
+- **Local images use base64**: vision.py automatically converts to data URI, bypassing public access restrictions (both agnes/aiping accept data URI in practice)
+- **Standard formats**: JPG/JPEG/PNG/WebP; for screenshots/UI images, it's recommended to add text description in the prompt to specify focus areas
+- **Provider selection**: OCR/formulas/problem solving → aiping DeepSeek-OCR-2; general descriptions/UI analysis → agnes-2.0-flash
+
+### Understanding Checklist
+
+- [ ] Did you provide a role (affects analysis depth)?
+- [ ] Is the task specific and answerable (avoid vague instructions like "describe this")?
+- [ ] Did you specify the output format (table/steps/JSON/three-part)?
+- [ ] Did you avoid private URLs for image input (local uses base64, remote confirmed publicly accessible)?

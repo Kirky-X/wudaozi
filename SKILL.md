@@ -1,409 +1,409 @@
 ---
 name: wudaozi
-description: "多能力媒体生成技能：文生图/图生图、图片理解、视频生成。触发：文生图/图生图/生成图片/AI画图/出图/boogu/agnes/kolors/画一张/插画/产品图/IP形象图/换背景/改图；图片理解/看图/识图/OCR/解题/DeepSeek-OCR；生成视频/文生视频/图生视频/agnes-video。出图走 agnes 云端/boogu 本地/kolors(仅文生图)，理解走 agnes-2.0-flash/aiping DeepSeek-OCR-2，视频走 agnes-video-v2.0。按能力→provider 路由，key 用环境变量。"
+description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding, video generation. Triggers: text-to-image/image-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Image generation via agnes cloud/boogu local/kolors (text-to-image only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0. Routes by capability→provider, keys via environment variables."
 license: MIT
 ---
 
-# wudaozi（吴道子）—— 多能力媒体生成技能
+# wudaozi — Multi-capability Media Generation Skill
 
-把用户的模糊媒体需求变成一条能跑的命令：**选能力 → 选 provider → 结构化 prompt → 调脚本**。
+Transforms users' vague media requirements into executable commands: **Select capability → Select provider → Structured prompt → Run script**.
 
-## 能力 × provider 矩阵
+## Capability × Provider Matrix
 
-| 能力         | 触发关键词                       | provider（脚本）                                                       | key 环境变量        |
-| ------------ | -------------------------------- | ---------------------------------------------------------------------- | ------------------- |
-| 文生图 t2i   | 画/生成/AI画图/出图              | **agnes** 云端 · **boogu** 本地 · **kolors** 云端（aiping）            | `AGNES_API_KEY` / — / `AIPING_API_KEY` |
-| 图生图 ti2i  | 改图/换背景/加元素/编辑这张      | **agnes** 云端 · **boogu** 本地（⚠️ kolors **不支持** ti2i）            | `AGNES_API_KEY` / — |
-| 图片理解     | 看图/识图/这张图里有什么/解题/OCR | **agnes**（agnes-2.0-flash）· **aiping**（DeepSeek-OCR-2）              | `AGNES_API_KEY` / `AIPING_API_KEY` |
-| 视频生成     | 生成视频/文生视频/图生视频/多图/关键帧 | **agnes**（agnes-video-v2.0：t2vid/ti2vid/multi/keyframes 异步轮询）| `AGNES_API_KEY`     |
+| Capability | Trigger Keywords | Provider (script) | Key Environment Variables |
+|------------|------------------|-------------------|---------------------------|
+| Text-to-image t2i | draw/generate/AI drawing/output image | **agnes** cloud · **boogu** local · **kolors** cloud (aiping) | `AGNES_API_KEY` / — / `AIPING_API_KEY` |
+| Image-to-image ti2i | edit image/change background/add elements/edit this | **agnes** cloud · **boogu** local (⚠️ kolors **does not support** ti2i) | `AGNES_API_KEY` / — |
+| Image understanding | see image/recognize image/what's in this image/solve problem/OCR | **agnes** (agnes-2.0-flash) · **aiping** (DeepSeek-OCR-2) | `AGNES_API_KEY` / `AIPING_API_KEY` |
+| Video generation | generate video/text-to-video/image-to-video/multi-image/keyframes | **agnes** (agnes-video-v2.0: t2vid/ti2vid/multi/keyframes async polling) | `AGNES_API_KEY` |
 
-> 🔴 **CHECKPOINT · 能力边界**：本技能**只做生成与理解**。视频/音频剪辑、3D 模型、PS 类精修合成（抠图/调色/拼接）**不在范围**——这些不要硬塞给生成模型。
-
----
-
-## Provider 选型（出图三 provider）
-
-| 维度     | agnes 云端                       | kolors 云端（aiping）              | boogu 本地                       |
-| -------- | -------------------------------- | ---------------------------------- | -------------------------------- |
-| 能力     | t2i + ti2i                       | **仅 t2i**（无 ti2i）              | t2i + ti2i                       |
-| 部署     | 配 `AGNES_API_KEY` 即用          | 配 `AIPING_API_KEY` 即用           | 需 GPU + 本地模型 + venv         |
-| 速度     | 单图秒级                         | 单图秒级                           | base 分钟级 / turbo 秒级         |
-| 显存     | 无要求                           | 无要求                             | 16GB+（fp8 可降到 ~8GB）         |
-| 定制     | size/prompt                      | size/prompt                        | turbo/fp8/seed/steps/cfg 全开    |
-| 隐私     | prompt/图上传云端                | prompt 上传云端                    | 全本地，不出机器                 |
-| 失败处理 | 显式报错，不 fallback            | 显式报错，不 fallback              | 显式报错，不 fallback            |
-| 适合     | 无 GPU / 快速出图                | 无 GPU / agnes 限流时备选          | 有 GPU / 隐私敏感 / 批量调参     |
-
-**默认路由**：`AGNES_API_KEY` 已设 → 出图走 agnes、理解走 agnes、视频走 agnes；未设 → 问用户「配 key 还是 boogu 本地」。kolors 作为 agnes 限流/不可用时的 t2i 备选，需单独配 `AIPING_API_KEY`。
-
-> 🔴 **CHECKPOINT**：本机 GPU 被 OS 拦截（NVML blocked），boogu 真出图须在有 CUDA 的机器跑（本机只能 `--dry-run`）。无 GPU 时走 agnes/kolors 云端即可真出图。
+> 🔴 **CHECKPOINT · Capability boundary**: This skill **only handles generation and understanding**. Video/audio editing, 3D models, PS-like fine retouching (matting/color grading/compositing) are **out of scope** — don't force these onto generation models.
 
 ---
 
-## 总体流程
+## Provider Selection (Three image generation providers)
+
+| Dimension | agnes cloud | kolors cloud (aiping) | boogu local |
+|-----------|-------------|----------------------|-------------|
+| Capability | t2i + ti2i | **t2i only** (no ti2i) | t2i + ti2i |
+| Deployment | Set `AGNES_API_KEY` and ready | Set `AIPING_API_KEY` and ready | Requires GPU + local models + venv |
+| Speed | Seconds per image | Seconds per image | base: minutes / turbo: seconds |
+| VRAM | No requirement | No requirement | 16GB+ (fp8 can reduce to ~8GB) |
+| Customization | size/prompt | size/prompt | turbo/fp8/seed/steps/cfg all available |
+| Privacy | prompt/image uploaded to cloud | prompt uploaded to cloud | Fully local, never leaves machine |
+| Failure handling | Explicit errors, no fallback | Explicit errors, no fallback | Explicit errors, no fallback |
+| Best for | No GPU / quick generation | No GPU / alternative when agnes is rate-limited | Has GPU / privacy-sensitive / batch tuning |
+
+**Default routing**: `AGNES_API_KEY` set → image generation via agnes, understanding via agnes, video via agnes; not set → ask user "configure key or use boogu locally". kolors serves as t2i alternative when agnes is rate-limited/unavailable, requires separate `AIPING_API_KEY` configuration.
+
+> 🔴 **CHECKPOINT**: Local GPU blocked by OS (NVML blocked), boogu actual image generation must run on machine with CUDA (local can only use `--dry-run`). Without GPU, use agnes/kolors cloud for actual generation.
+
+---
+
+## Overall Flow
 
 ```mermaid
 flowchart TD
-    Req(["用户需求"]) --> Cap{"选能力"}
-    Cap -- "画/出图/改图" --> IMG["出图能力"]
-    Cap -- "看图/识图/解题" --> VIS["图片理解"]
-    Cap -- "生成视频" --> VID["视频生成"]
-    IMG --> M{"有参考图?"}
-    M -- "是(改/换/编辑)" --> TI2I["ti2i 图生图<br/>⚠️ kolors 不支持"]
-    M -- "否" --> T2I["t2i 文生图"]
-    TI2I --> ProvImg{"provider?<br/>agnes / boogu"}
-    T2I --> ProvImg2{"provider?<br/>agnes / kolors / boogu"}
+    Req(["User requirement"]) --> Cap{"Select capability"}
+    Cap -- "draw/output image/edit image" --> IMG["Image generation capability"]
+    Cap -- "see image/recognize image/solve problem" --> VIS["Image understanding"]
+    Cap -- "generate video" --> VID["Video generation"]
+    IMG --> M{"Has reference image?"}
+    M -- "Yes (edit/change/modify)" --> TI2I["ti2i image-to-image<br/>⚠️ kolors not supported"]
+    M -- "No" --> T2I["t2i text-to-image"]
+    TI2I --> ProvImg{"Provider?<br/>agnes / boogu"}
+    T2I --> ProvImg2{"Provider?<br/>agnes / kolors / boogu"}
     ProvImg -- agnes --> A4["agnes.py"]
-    ProvImg -- boogu --> B1["步骤1路由→步骤3矩阵→boogu.py"]
+    ProvImg -- boogu --> B1["Step 1 routing → Step 3 matrix → boogu.py"]
     ProvImg2 -- agnes --> A4
-    ProvImg2 -- kolors --> K4["kolors.py（仅 t2i）"]
+    ProvImg2 -- kolors --> K4["kolors.py (t2i only)"]
     ProvImg2 -- boogu --> B1
-    VIS --> ProvVis{"provider?<br/>agnes / aiping"}
+    VIS --> ProvVis{"Provider?<br/>agnes / aiping"}
     ProvVis -- agnes --> V4["vision.py agnes"]
     ProvVis -- aiping --> V4B["vision.py aiping"]
-    VID --> Vmode{"几张参考图?"}
-    Vmode -- "0 张" --> T2V["t2vid 文生视频"]
-    Vmode -- "1 张(URL)" --> TI2V["ti2vid 图生视频"]
-    Vmode -- "≥2 张(URL)" --> Vmk{"过渡类型?"}
-    Vmk -- "场景融合" --> MLT["multi 多图视频"]
-    Vmk -- "帧间过渡" --> KF["keyframes 关键帧"]
-    T2V --> VID4["video.py（异步轮询）"]
+    VID --> Vmode{"How many reference images?"}
+    Vmode -- "0 images" --> T2V["t2vid text-to-video"]
+    Vmode -- "1 image (URL)" --> TI2V["ti2vid image-to-video"]
+    Vmode -- "≥2 images (URL)" --> Vmk{"Transition type?"}
+    Vmk -- "Scene fusion" --> MLT["multi multi-image video"]
+    Vmk -- "Inter-frame transition" --> KF["keyframes keyframe"]
+    T2V --> VID4["video.py (async polling)"]
     TI2V --> VID4
     MLT --> VID4
     KF --> VID4
     A4 --> Out(["PNG"])
     K4 --> Out
     B1 --> Out
-    V4 --> Txt(["文本(stdout/txt)"])
+    V4 --> Txt(["Text (stdout/txt)"])
     V4B --> Txt
     VID4 --> Mp4(["MP4"])
 ```
 
-所有能力共用**步骤 2 · 结构化 prompt**（见下）。出图走 boogu 时额外经过步骤 1（路由）和步骤 3（模型矩阵）；其余 provider 直接到步骤 4。
+All capabilities share **Step 2 · Structured prompt** (see below). When using boogu for image generation, additionally go through Step 1 (routing) and Step 3 (model matrix); other providers go directly to Step 4.
 
 ---
 
-## 步骤 1 — 路由请求（仅 boogu）
+## Step 1 — Route Request (boogu only)
 
-> agnes / kolors / vision / video 跳过本步骤（无 turbo/fp8/seed/steps 概念）。
+> agnes / kolors / vision / video skip this step (no turbo/fp8/seed/steps concepts).
 
-按 **参考图 → 速度 → 显存** 三段顺序判定。决策树优于表格（能表达判断先后）：
+Determined in order by **reference image → speed → VRAM**. Decision tree is preferred over table (expresses judgment priority):
 
 ```mermaid
 flowchart TD
-    Start(["用户请求"]) --> Q1{"提供参考图？<br/>'改/换/编辑/加元素'"}
-    Q1 -- 是 --> TI2I["mode = ti2i<br/>图生图"]
-    Q1 -- 否 --> T2I["mode = t2i<br/>文生图"]
-    TI2I --> Q2{"要快速试错？<br/>'快速/草图/迭代/批量'"}
+    Start(["User request"]) --> Q1{"Has reference image?<br/>'edit/change/modify/add elements'"}
+    Q1 -- Yes --> TI2I["mode = ti2i<br/>image-to-image"]
+    Q1 -- No --> T2I["mode = t2i<br/>text-to-image"]
+    TI2I --> Q2{"Need fast iteration?<br/>'quick/sketch/iterate/batch'"}
     T2I --> Q2
-    Q2 -- 是 --> TURBO["turbo<br/>4 步 · 无 CFG · 约 10×"]
-    Q2 -- 否 --> BASE["base<br/>50 步 · CFG 4.0 · 高质量"]
-    TURBO --> Q3{"显存紧张？<br/>OOM / ≤16G 显卡"}
+    Q2 -- Yes --> TURBO["turbo<br/>4 steps · no CFG · ~10× faster"]
+    Q2 -- No --> BASE["base<br/>50 steps · CFG 4.0 · high quality"]
+    TURBO --> Q3{"VRAM constrained?<br/>OOM / ≤16G GPU"}
     BASE --> Q3
-    Q3 -- 是 --> FP8["fp8 量化<br/>省约 50% 显存"]
-    Q3 -- 否 --> BF16["bf16 非量化"]
-    FP8 --> Final(["进入步骤 2"])
+    Q3 -- Yes --> FP8["fp8 quantization<br/>~50% VRAM savings"]
+    Q3 -- No --> BF16["bf16 non-quantized"]
+    FP8 --> Final(["Proceed to Step 2"])
     BF16 --> Final
 ```
 
-**关键词速查**（自然语言触发，配合决策树）：
+**Keyword quick reference** (natural language triggers, works with decision tree):
 
-| 用户说…                       | mode | turbo  | 量化   |
-| ----------------------------- | ---- | ------ | ------ |
-| "画/生成/AI 画图/出图"        | t2i  | 否     | 否     |
-| "快速/草图/试几个版本/迭代"   | t2i  | **是** | 视显存 |
-| "改图/换背景/加元素/编辑这张" | ti2i | 否     | 否     |
-| "快速改图/批量编辑"           | ti2i | **是** | 视显存 |
-| "显存不够/OOM/16G 显卡"       | —    | —      | **是** |
+| User says... | mode | turbo | Quantization |
+|-------------|------|-------|--------------|
+| "draw/generate/AI drawing/output image" | t2i | No | No |
+| "quick/sketch/try versions/iterate" | t2i | **Yes** | Depends on VRAM |
+| "edit image/change background/add elements/edit this" | ti2i | No | No |
+| "quick edit/batch editing" | ti2i | **Yes** | Depends on VRAM |
+| "VRAM insufficient/OOM/16G GPU" | — | — | **Yes** |
 
-**默认决策**：未明示时 = `t2i + base + bf16 + 1:1 + 自动随机种子`。
+**Default decision**: When not specified = `t2i + base + bf16 + 1:1 + auto random seed`.
 
-> 🔴 **CHECKPOINT**：偏离默认（启用 turbo / fp8 / ti2i / 自定义尺寸）前，先与用户对齐原因（如"显存紧张建议 fp8"），获确认再进入步骤 2。
+> 🔴 **CHECKPOINT**: Before deviating from defaults (enabling turbo / fp8 / ti2i / custom dimensions), first align with user on the reason (e.g., "VRAM constrained, recommend fp8"), get confirmation, then proceed to Step 2.
 
 ---
 
-## 步骤 2 — 构造结构化 prompt
+## Step 2 — Construct Structured Prompt
 
-### 出图（agnes/boogu/kolors 共用）
+### Image generation (shared by agnes/boogu/kolors)
 
-读取 [`references/prompt-template.md`](references/prompt-template.md)，按 **7 维度**补全用户的模糊需求：
+Read [`references/prompt-template.md`](references/prompt-template.md), complete users' vague requirements by **7 dimensions**:
 
-1. 主体 → 2. 动作/神态 → 3. 背景/环境 → 4. 构图/视角 → 5. 光线 → 6. 风格/媒介 → 7. 画质
+1. Subject → 2. Action/Expression → 3. Background/Environment → 4. Composition/Perspective → 5. Lighting → 6. Style/Medium → 7. Quality
 
-#### 模糊需求 → 一次一问澄清
+#### Vague requirements → Ask one question at a time for clarification
 
-当用户需求**关键维度缺失**（主体不明 / 风格未定 / 用途未说）时，**不要一次抛 7 个问题**，也**不要默默填默认值**。按优先级**一次只问一个**问题，给 2-4 个候选选项 + 一个"自定义"出口：
+When users' requirements have **missing key dimensions** (subject unclear / style undefined / purpose not stated), **don't throw 7 questions at once**, and **don't silently fill defaults**. Ask **one question at a time** by priority, giving 2-4 candidate options + a "custom" exit:
 
-> 用户："做个 logo"
-> ❌ 一次性问"什么品牌/行业/颜色/风格/字体..."
-> ✅ 第一轮只问最关键的：_"logo 用于什么场景？"_ 给候选：`品牌主视觉 / App 图标 / 社交头像 / 自定义`
-> 用户选完 → 再问下一维（风格偏好：极简 / 几何 / 手绘 / 字标）
-> 连续 2-3 轮后关键维度齐全 → 进入下方 7 维补全
+> User: "Make a logo"
+> ❌ Asking all at once "What brand/industry/color/style/font..."
+> ✅ First round only ask the most critical: _"What scenario is this logo for?"_ Give candidates: `Brand visual / App icon / Social avatar / Custom`
+> After user selects → ask next dimension (style preference: minimalist/geometric/hand-drawn/wordmark)
+> After 2-3 rounds when key dimensions are complete → proceed to 7-dimension completion below
 
-**优先级队列**（按缺失影响排序）：主体 > 风格/媒介 > 背景 > 构图 > 光线 > 画质。后三维可安全用默认，不必问用户。
+**Priority queue** (sorted by missing impact): Subject > Style/Medium > Background > Composition > Lighting > Quality. The last three dimensions can safely use defaults without asking user.
 
-#### 显式确认（强制）
+#### Explicit confirmation (mandatory)
 
-7 维齐全后，把最终结果**显式列给用户**（哪几维用了默认、哪几维是用户原意/澄清答案），获确认后再拼成 `--instruction`。
+After all 7 dimensions are complete, **explicitly list the final result** to user (which dimensions used defaults, which dimensions are user's original intent/clarification answers), get confirmation, then assemble into `--instruction`.
 
-> 🔴 **CHECKPOINT · 🛑 STOP**：列出完整 7 维 → 等用户确认（"可以" / "改 X 维"）→ 才进入步骤 3/4。**禁止跳过确认直接构造命令。**
+> 🔴 **CHECKPOINT · 🛑 STOP**: List complete 7 dimensions → wait for user confirmation ("OK" / "change dimension X") → then proceed to Step 3/4. **Skipping confirmation to directly construct command is prohibited.**
 
-负向提示用 `--negative-instruction`：**不传**则脚本自动用内置通用模板（推荐），传**空字符串**禁用，传**非空**覆盖。
+Negative prompts use `--negative-instruction`: **not passing** uses built-in general template (recommended), passing **empty string** disables, passing **non-empty** overrides.
 
-### 图片理解（vision）
+### Image understanding (vision)
 
-用 **5 段式结构**提问质量更高：`[角色] + [任务] + [上下文] + [要求] + [输出格式]`（详见 `references/prompt-template.md` § 图片理解）。至少要做到**具体可答**，避免"描述一下"这种空泛指令。按用途给候选：
+Higher quality questions use **5-segment structure**: `[Role] + [Task] + [Context] + [Requirements] + [Output format]` (see `references/prompt-template.md` § Image Understanding). At minimum ensure **specific and answerable**, avoid vague instructions like "describe this". Give candidates by use case:
 
-| 用途           | 示例 question                                        |
-| -------------- | ---------------------------------------------------- |
-| 内容识别       | "这张图里有什么？列出主要物体和场景"                 |
-| OCR/解题       | "识别图中的文字并逐字输出" / "这道题怎么解？给步骤"  |
-| 细节描述       | "图中人物的穿着、表情、动作分别是什么"               |
-| 对比分析       | "这张图与 typical XX 的差异在哪"                     |
+| Use Case | Example Question |
+|----------|------------------|
+| Content recognition | "What's in this image? List main objects and scenes" |
+| OCR/Problem solving | "Recognize text in image and output verbatim" / "How to solve this problem? Give steps" |
+| Detail description | "What are the clothing, expression, and actions of people in the image" |
+| Comparative analysis | "What are the differences between this image and typical XX" |
 
-> aiping `DeepSeek-OCR-2` 在 **OCR/公式/解题**上强项；agnes-2.0-flash 在**通识描述**上更均衡。按用途选 provider。
+> aiping `DeepSeek-OCR-2` excels at **OCR/formulas/problem solving**; agnes-2.0-flash is more balanced for **general descriptions**. Choose provider by use case.
 >
-> ⚠️ **图像 URL 必须可公开访问**：需登录/认证/防盗链的 URL 模型读不到（silent 失败，不报错只臆测）。本地图片 vision.py 自动转 base64 data URI 绕过此限制。
+> ⚠️ **Image URLs must be publicly accessible**: URLs requiring login/authentication/hotlink protection cannot be read by models (silent failure, no error, just guesses). Local images are automatically converted to base64 data URI by vision.py to bypass this limitation.
 
-### 视频生成（video）
+### Video generation (video)
 
-视频 prompt 心智**与出图不同**——描述「一段时间的演变」而非一瞬间。核心公式：`[主体] + [动作] + [场景] + [镜头运动] + [光线] + [风格]`（详见 `references/prompt-template.md` § 视频生成）。补「镜头运动 + 运动描述」：
+Video prompt mindset **differs from image generation** — describes "evolution over time" rather than a single moment. Core formula: `[Subject] + [Action] + [Scene] + [Camera movement] + [Lighting] + [Style]` (see `references/prompt-template.md` § Video Generation). Add "camera movement + motion description":
 
-- 镜头：推进/拉远/平移/环绕/固定
-- **运动描述**（视频灵魂）：显式声明「哪些动 + 哪些稳定」——"...hair moving gently in the wind, **while keeping the face and outfit consistent**"，避免主体漂移
-- 演变：「先…然后…最后…」的时间线
-- 时长：3s（试构图）/ 5s（默认）/ 10s（完整叙事）/ 18s（长镜头，≤441 帧）
+- Camera: push-in/pull-out/pan/orbit/static
+- **Motion description** (soul of video): Explicitly state "what moves + what stays stable" — "...hair moving gently in the wind, **while keeping the face and outfit consistent**", avoid subject drift
+- Evolution: Timeline "first...then...finally..."
+- Duration: 3s (test composition) / 5s (default) / 10s (full narrative) / 18s (long take, ≤441 frames)
 
-> 视频生成**慢**（3s 视频约 1-3 分钟），先用短时长试构图，满意再加长。
-
----
-
-## 步骤 3 — 选模型（仅 boogu · 2×2×2 矩阵）
-
-> agnes / kolors / vision / video 无模型矩阵概念，本步骤跳过；ti2i 时参考图在步骤 4 由 agnes.py 自动转 Data URI 或透传公网 URL。
-
-| 模式 | turbo | 量化 | 模型目录                         | 入口脚本             | 关键参数（脚本自动填）            |
-| ---- | ----- | ---- | -------------------------------- | -------------------- | --------------------------------- |
-| t2i  | base  | bf16 | `Boogu-Image-0.1-Base`           | `inference.py`       | steps=50, text_cfg=4.0            |
-| t2i  | base  | fp8  | `Boogu-Image-0.1-Base-fp8`       | `inference.py`       | + `--use_fp8_weights`             |
-| t2i  | turbo | bf16 | `Boogu-Image-0.1-Turbo`          | `inference_turbo.py` | steps=4, cfg=1.0, dmd_sigma=0.001 |
-| t2i  | turbo | fp8  | `Boogu-Image-0.1-Turbo-fp8`      | `inference_turbo.py` | 同上 + fp8                        |
-| ti2i | base  | bf16 | `Boogu-Image-0.1-Edit`           | `inference.py`       | + image_cfg=1.0                   |
-| ti2i | base  | fp8  | `Boogu-Image-0.1-Edit-fp8`       | `inference.py`       | 同上 + fp8                        |
-| ti2i | turbo | bf16 | `Boogu-Image-0.1-Edit-Turbo`     | `inference_turbo.py` | dmd_sigma=0.0, empty_cfg=0.0      |
-| ti2i | turbo | fp8  | `Boogu-Image-0.1-Edit-Turbo-fp8` | `inference_turbo.py` | 同上 + fp8                        |
-
-**模型可用性**（脚本会自动探测并报错）：
-
-- 本机已下载：`Base`、`Turbo`（仅 T2I 非量化）
-- 需用户下载：`Edit` 系列（图生图）、全部 `-fp8` 系列
-- 用户要图生图或 fp8 但本地无模型 → **不要硬跑**，明确告知"需先下载 models/{name}"，或降级到本地可用组合
+> Video generation is **slow** (~1-3 minutes for 3s video), test with short duration first, extend when satisfied.
 
 ---
 
-## 步骤 4 — 调用脚本
+## Step 3 — Select Model (boogu only · 2×2×2 matrix)
 
-### 4A · agnes 云端出图（`scripts/agnes.py`）
+> agnes / kolors / vision / video have no model matrix concept, skip this step; for ti2i, reference images are automatically converted to Data URI or passed through as public URLs by agnes.py in Step 4.
+
+| Mode | turbo | Quantization | Model Directory | Entry Script | Key Parameters (auto-filled by script) |
+|------|-------|--------------|-----------------|--------------|----------------------------------------|
+| t2i | base | bf16 | `Boogu-Image-0.1-Base` | `inference.py` | steps=50, text_cfg=4.0 |
+| t2i | base | fp8 | `Boogu-Image-0.1-Base-fp8` | `inference.py` | + `--use_fp8_weights` |
+| t2i | turbo | bf16 | `Boogu-Image-0.1-Turbo` | `inference_turbo.py` | steps=4, cfg=1.0, dmd_sigma=0.001 |
+| t2i | turbo | fp8 | `Boogu-Image-0.1-Turbo-fp8` | `inference_turbo.py` | Same as above + fp8 |
+| ti2i | base | bf16 | `Boogu-Image-0.1-Edit` | `inference.py` | + image_cfg=1.0 |
+| ti2i | base | fp8 | `Boogu-Image-0.1-Edit-fp8` | `inference.py` | Same as above + fp8 |
+| ti2i | turbo | bf16 | `Boogu-Image-0.1-Edit-Turbo` | `inference_turbo.py` | dmd_sigma=0.0, empty_cfg=0.0 |
+| ti2i | turbo | fp8 | `Boogu-Image-0.1-Edit-Turbo-fp8` | `inference_turbo.py` | Same as above + fp8 |
+
+**Model availability** (scripts auto-detect and report errors):
+
+- Locally downloaded: `Base`, `Turbo` (T2I non-quantized only)
+- Requires user download: `Edit` series (image-to-image), all `-fp8` series
+- User wants image-to-image or fp8 but no local model → **don't force run**, clearly inform "must download models/{name} first", or degrade to locally available combinations
+
+---
+
+## Step 4 — Call Scripts
+
+### 4A · agnes cloud image generation (`scripts/agnes.py`)
 
 ```bash
-# 文生图（默认 url 下载 + 1:1，输出到 $PWD/agnes-output/）
-AGNES_API_KEY=agn-xxx python3 scripts/agnes.py t2i -i "<结构化 instruction>"
+# Text-to-image (default URL download + 1:1, output to $PWD/agnes-output/)
+AGNES_API_KEY=agn-xxx python3 scripts/agnes.py t2i -i "<structured instruction>"
 
-# 竖屏手机壁纸
+# Vertical phone wallpaper
 AGNES_API_KEY=agn-xxx python3 scripts/agnes.py t2i -i "<instruction>" --aspect 9:16
 
-# 图生图（本地参考图自动转 base64，或传公网 URL）
-AGNES_API_KEY=agn-xxx python3 scripts/agnes.py ti2i -i "把背景换成沙滩" --input photo.jpg
+# Image-to-image (local reference images auto-converted to base64, or pass public URL)
+AGNES_API_KEY=agn-xxx python3 scripts/agnes.py ti2i -i "Change background to beach" --input photo.jpg
 
-# 无 key / 调试：只看 curl 不真调
+# No key / debug: only view curl, don't actually call
 AGNES_API_KEY=agn-test python3 scripts/agnes.py t2i -i "<instruction>" --dry-run
 ```
 
-agnes.py 自动：构造 `model/prompt/size(+参考图)` 请求 → POST agnes endpoint → 下载 URL 或解码 base64 存 PNG → key 截断防泄露。错误（401/429/400/超时/响应无 data）**显式报错并退出，不 fallback**——由用户决定重试或切 provider。
+agnes.py automatically: constructs `model/prompt/size(+reference image)` request → POST agnes endpoint → downloads URL or decodes base64 to PNG → truncates key to prevent leakage. Errors (401/429/400/timeout/no data in response) **report explicitly and exit, no fallback** — user decides to retry or switch provider.
 
-宽高比预设（与 boogu 同值）：`1:1` · `3:4`/`4:3` · `2:3`/`3:2` · `9:16`/`16:9`。agnes **不**做 16 对齐（云端黑盒，size 清单未知，HTTP 400 时换 `--aspect` 预设）。完整 CLI：`python3 scripts/agnes.py --help`。
+Aspect ratio presets (same values as boogu): `1:1` · `3:4`/`4:3` · `2:3`/`3:2` · `9:16`/`16:9`. agnes does **not** do 16-alignment (cloud black box, unknown size list, use `--aspect` presets when encountering HTTP 400). Full CLI: `python3 scripts/agnes.py --help`.
 
-### 4B · kolors 云端出图（`scripts/kolors.py`，⚠️ 仅 t2i）
+### 4B · kolors cloud image generation (`scripts/kolors.py`, ⚠️ t2i only)
 
 ```bash
-# 文生图（输出到 $PWD/kolors-output/）
-AIPING_API_KEY=QC-xxx python3 scripts/kolors.py t2i -i "<结构化 instruction>"
+# Text-to-image (output to $PWD/kolors-output/)
+AIPING_API_KEY=QC-xxx python3 scripts/kolors.py t2i -i "<structured instruction>"
 
-# 自定义尺寸（image_size 直接传 WxH）
+# Custom size (image_size takes WxH directly)
 AIPING_API_KEY=QC-xxx python3 scripts/kolors.py t2i -i "<instruction>" --image-size 1328x1328
 
-# 用预设比例
+# Use aspect ratio preset
 AIPING_API_KEY=QC-xxx python3 scripts/kolors.py t2i -i "<instruction>" --aspect 9:16
 
-# 调试
+# Debug
 AIPING_API_KEY=QC-test python3 scripts/kolors.py t2i -i "<instruction>" --dry-run
 ```
 
-> 🔴 **CHECKPOINT · kolors 硬约束**：kolors.py **只接受 t2i**（CLI `choices=["t2i"]`，传 ti2i 直接拒绝）。用户要图生图 → 走 agnes 或 boogu，**不要**尝试 kolors。size 用 `--image-size WxH` 或 `--aspect` 预设（`1:1`/`3:4`/`4:3`/`2:3`/`3:2`/`9:16`/`16:9`）；不传则服务端给默认。返回 `data[0].url` 下载，错误（401/429/400/超时）显式报错不 fallback。
+> 🔴 **CHECKPOINT · kolors hard constraint**: kolors.py **only accepts t2i** (CLI `choices=["t2i"]`, passing ti2i directly rejected). User wants image-to-image → use agnes or boogu, **don't** attempt kolors. Size uses `--image-size WxH` or `--aspect` presets (`1:1`/`3:4`/`4:3`/`2:3`/`3:2`/`9:16`/`16:9`); if not passed, server provides default. Returns `data[0].url` for download, errors (401/429/400/timeout) report explicitly without fallback.
 
-### 4C · boogu 本地出图（`scripts/boogu.py`）
+### 4C · boogu local image generation (`scripts/boogu.py`)
 
 ```bash
-# 文生图（默认 base + bf16 + 1:1 + 自动种子，输出到 $PWD/boogu-output/）
-python3 scripts/boogu.py t2i -i "<结构化 instruction>"
+# Text-to-image (default base + bf16 + 1:1 + auto seed, output to $PWD/boogu-output/)
+python3 scripts/boogu.py t2i -i "<structured instruction>"
 
-# turbo + 竖屏 + 指定种子（复现）
+# turbo + vertical + specified seed (reproducibility)
 python3 scripts/boogu.py t2i -i "<instruction>" --turbo --aspect 9:16 --seed 42
 
-# 图生图（编辑参考图），fp8 省显存
-python3 scripts/boogu.py ti2i -i "把背景换成沙滩" --input photo.jpg --quantized
+# Image-to-image (edit reference image), fp8 saves VRAM
+python3 scripts/boogu.py ti2i -i "Change background to beach" --input photo.jpg --quantized
 
-# 无 GPU / 调试：只看命令不真跑
+# No GPU / debug: only view command, don't actually run
 python3 scripts/boogu.py t2i -i "<instruction>" --dry-run
 
-# 自定义输出目录
+# Custom output directory
 python3 scripts/boogu.py t2i -i "<instruction>" -o ./my-output/
 ```
 
-脚本会自动：
+Scripts automatically:
 
-- 按 `(mode, turbo, quantized)` 选官方脚本与模型（确定性查找表）
-- 填 turbo/base 默认参数差异（步数、CFG、dmd_sigma）
-- 未指定 `--seed` 时生成随机种子并回显（便于复现）
-- 输出路径默认 `$PWD/boogu-output/`，文件名含 mode+seed+尺寸+时间戳防覆盖
-- 按 H×W 自动算 `max_input_image_pixels` 与 `max_input_image_side_length`（官方推荐公式，保证清晰度）
-- 探测 venv/模型/GPU，缺失即明确报错并给修复建议
+- Select official script and model by `(mode, turbo, quantized)` (deterministic lookup table)
+- Fill turbo/base default parameter differences (steps, CFG, dmd_sigma)
+- Generate random seed and echo when `--seed` not specified (for reproducibility)
+- Output path defaults to `$PWD/boogu-output/`, filename includes mode+seed+size+timestamp to prevent overwriting
+- Auto-calculate `max_input_image_pixels` and `max_input_image_side_length` by H×W (official recommended formula, ensures clarity)
+- Detect venv/model/GPU, report errors explicitly with fix suggestions when missing
 
-**宽高比预设**（全部 16 对齐，长边 ≤ 2048）：`1:1`(1024²) · `3:4`/`4:3`(1024×1360) · `2:3`/`3:2`(1024×1536) · `9:16`/`16:9`(1024×1824)。也可用 `--height/--width` 自定义（脚本会向下对齐 16）。
+**Aspect ratio presets** (all 16-aligned, longest side ≤ 2048): `1:1`(1024²) · `3:4`/`4:3`(1024×1360) · `2:3`/`3:2`(1024×1536) · `9:16`/`16:9`(1024×1824). Can also use `--height/--width` for custom (scripts align down to 16).
 
-**关键参数覆盖**（一般用默认即可）：`--steps` `--text-guidance` `--dmd-sigma` `--device` `--negative-instruction`。完整清单 `python3 scripts/boogu.py --help`。
+**Key parameter overrides** (defaults usually suffice): `--steps` `--text-guidance` `--dmd-sigma` `--device` `--negative-instruction`. Full list: `python3 scripts/boogu.py --help`.
 
-### 4D · 图片理解（`scripts/vision.py`）
+### 4D · Image Understanding (`scripts/vision.py`)
 
 ```bash
-# agnes 理解本地图（自动转 base64；实测 agnes 接受 data URI）
-AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image photo.jpg -q "这张图里有什么"
+# agnes understands local image (auto-converted to base64; agnes accepts data URI in practice)
+AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image photo.jpg -q "What's in this image"
 
-# agnes 理解公网 URL 图
-AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image https://example.com/a.jpg -q "描述这张图"
+# agnes understands public URL image
+AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image https://example.com/a.jpg -q "Describe this image"
 
-# aiping DeepSeek-OCR-2 解题/OCR
-AIPING_API_KEY=QC-xxx python3 vision.py aiping --image math.png -q "这道题怎么解答？"
+# aiping DeepSeek-OCR-2 problem solving/OCR
+AIPING_API_KEY=QC-xxx python3 vision.py aiping --image math.png -q "How to solve this problem?"
 
-# 结果存 txt（默认正文打 stdout，便于管道读取）
+# Save result to txt (default outputs to stdout for piping)
 AGNES_API_KEY=agn-xxx python3 scripts/vision.py agnes --image x.jpg -q "..." --output result.txt
 ```
 
-vision.py 自动：本地路径 → base64 data URI，http(s) URL → 透传；构造 OpenAI 兼容 chat/completions（content array：image_url + text）→ 调对应 provider → 提取 content 打 stdout。两个 provider 文档/实测都接受 base64 data URI（agnes 文档说只支持 URL，实测 base64 也能用）。错误（401/429/400/超时）显式报错不 fallback。
+vision.py automatically: local path → base64 data URI, http(s) URL → pass through; constructs OpenAI-compatible chat/completions (content array: image_url + text) → calls corresponding provider → extracts content to stdout. Both providers accept base64 data URI in documentation/testing (agnes docs say only URL supported, but base64 works in practice). Errors (401/429/400/timeout) report explicitly without fallback.
 
-### 4E · 视频生成（`scripts/video.py`，异步轮询）
+### 4E · Video Generation (`scripts/video.py`, async polling)
 
 ```bash
-# 文生视频，5s 16:9（默认）
-AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "猫在沙滩走，电影感，暖光"
+# Text-to-video, 5s 16:9 (default)
+AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "Cat walking on beach, cinematic, warm light"
 
-# 3s 短视频试构图 + 反向提示
+# 3s short video for composition testing + negative prompt
 AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --duration 3s --aspect 16:9 \
-    --negative-instruction "模糊, 变形"
+    --negative-instruction "blurry, deformed"
 
-# 图生视频（首帧图必须是公网 URL，不支持 base64）
-AGNES_API_KEY=agn-xxx python3 video.py ti2vid -i "镜头缓慢推进" --image https://x/a.png
+# Image-to-video (first frame image must be public URL, base64 not supported)
+AGNES_API_KEY=agn-xxx python3 video.py ti2vid -i "Slow camera push-in" --image https://x/a.png
 
-# 多图融合（multi）：≥2 张公网图，描述图与图之间的关系/场景过渡
-AGNES_API_KEY=agn-xxx python3 video.py multi -i "从场景 A 平滑变到场景 B" \
+# Multi-image fusion (multi): ≥2 public images, describe relationships/scene transitions between images
+AGNES_API_KEY=agn-xxx python3 video.py multi -i "Smooth transition from scene A to scene B" \
     --images https://x/a.png https://x/b.png
 
-# 关键帧过渡（keyframes）：≥2 张公网图，描述帧间过渡，保持身份/视角一致
-AGNES_API_KEY=agn-xxx python3 video.py keyframes -i "保持人物一致，镜头缓慢推近" \
+# Keyframe transition (keyframes): ≥2 public images, describe inter-frame transitions, maintain identity/perspective consistency
+AGNES_API_KEY=agn-xxx python3 video.py keyframes -i "Maintain character consistency, slow camera push-in" \
     --images https://x/a.png https://x/b.png
 
-# 调试：只看创建任务 curl
+# Debug: only view create task curl
 AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --dry-run
 ```
 
-video.py 异步流程：POST `/v1/videos` 创建任务拿 `video_id` → 轮询 `GET /agnesapi?video_id=X` 到 `completed`/`failed`/超时 → 下载 mp4 到 `$PWD/video-output/`。
+video.py async flow: POST `/v1/videos` to create task, get `video_id` → poll `GET /agnesapi?video_id=X` until `completed`/`failed`/timeout → download mp4 to `$PWD/video-output/`.
 
-> 🔴 **CHECKPOINT · 视频硬约束**：
-> - **num_frames 须 8n+1**（81/121/241/441），≤441；frame_rate 1-60。入口校验拒绝，避免服务端 400。用 `--duration` 预设自动满足。
-> - **ti2vid `--image` / multi·keyframes `--images` 都只接受公网 http(s) URL**（文档明确，视频生成不支持 base64）——本地图片须先传图床/OSS。multi/keyframes 至少 2 张 URL（单张走 ti2vid）。
-> - 视频生成慢，`--max-wait` 默认 1200s（覆盖最长 18s 视频的生成耗时）；超时会打印 `video_id` 供手动 `curl` 查询。
-
----
-
-## 默认值速查（boogu 出图）
-
-| 维度                               | base | turbo                |
-| ---------------------------------- | ---- | -------------------- |
-| 步数                               | 50   | 4                    |
-| text guidance                      | 4.0  | 1.0                  |
-| image guidance（ti2i）             | 1.0  | 1.0                  |
-| empty_instruction guidance（ti2i） | —    | 0.0                  |
-| dmd_conditioning_sigma             | —    | t2i=0.001 / ti2i=0.0 |
-| 用 CFG                             | 是   | 否（DMD 学生推理）   |
-| 相对速度                           | 1×   | 约 10×               |
-
-视频时长预设（num_frames, frame_rate，均 8n+1）：`3s`=(81,24) · `5s`=(121,24) · `10s`=(241,24) · `18s`=(441,24)。
-视频分辨率预设（W,H）：`16:9`=(1152,768) · `9:16`=(768,1152) · `1:1`=(960,960) · `4:3`=(1024,768) · `3:4`=(768,1024)。
+> 🔴 **CHECKPOINT · Video hard constraints**:
+> - **num_frames must be 8n+1** (81/121/241/441), ≤441; frame_rate 1-60. Entry validation rejects to avoid server 400. Use `--duration` presets for automatic compliance.
+> - **ti2vid `--image` / multi·keyframes `--images` only accept public http(s) URLs** (explicitly documented, video generation does not support base64) — local images must be uploaded to image hosting/OSS first. multi/keyframes require ≥2 URLs (single image uses ti2vid).
+> - Video generation is slow, `--max-wait` defaults to 1200s (covers longest 18s video generation time); timeout prints `video_id` for manual `curl` query.
 
 ---
 
-## 失败模式与 fallback
+## Default Values Quick Reference (boogu image generation)
 
-> 所有云端 provider（agnes/kolors/vision/video）失败均由对应脚本**显式报错并退出，不自动 fallback**；用户决定重试或切 provider。下表为 boogu 本地失败修复。
+| Dimension | base | turbo |
+|-----------|------|-------|
+| Steps | 50 | 4 |
+| text guidance | 4.0 | 1.0 |
+| image guidance (ti2i) | 1.0 | 1.0 |
+| empty_instruction guidance (ti2i) | — | 0.0 |
+| dmd_conditioning_sigma | — | t2i=0.001 / ti2i=0.0 |
+| Use CFG | Yes | No (DMD student inference) |
+| Relative speed | 1× | ~10× |
 
-| 触发                  | 一线修复                                                         | 兜底                                               |
-| --------------------- | ---------------------------------------------------------------- | -------------------------------------------------- |
-| `[ERROR] 模型未下载`  | 提示用户下载对应模型到 `~/software/Boogu-Image/models/`          | 降级到本地已有模型（如 Edit 缺失 → 改走 t2i 重绘） |
-| `[WARN] GPU 探测失败` | 加 `--dry-run` 验证命令；或 `--device cpu`（极慢，仅调试）       | 引导到有 CUDA 的机器跑                             |
-| 显存 OOM              | 加 `--quantized`（fp8）                                          | 降尺寸：`--aspect 1:1` 或更小 `--height/--width`   |
-| 出图模糊              | 检查是否设了过大 H×W 但 max_input 太小（脚本已按官方公式自动算） | 用 base 重出，或换更高分辨率预设                   |
-| ti2i 改图"飞掉"       | 降 text_guidance、加 image_guidance                              | 用 base 而非 turbo（CFG 更可控）                   |
-| 出图与预期不符        | 先调 prompt（七维是否齐全），再调 seed/步数                      | 同 seed 复现 + 单维调参                            |
-| 视频轮询超时          | 加大 `--max-wait`，或用打印的 `video_id` 手动 `curl` 查询        | 改短时长（`--duration 3s`）减少生成耗时            |
-| 视频文件 <10KB        | 任务异常完成，检查 prompt/seed，重跑                             | 换 `--aspect` 或 `--duration` 预设                 |
-
----
-
-## 特殊场景：logo / IP 形象 / 产品衍生图
-
-这三类是 **t2i 的专门子任务**，走同一个出图后端（agnes/kolors/boogu 均可），**仅 prompt 模板不同**。读 [`references/prompt-template.md`](references/prompt-template.md) 对应章节：
-
-| 用户说…                         | 任务类型 | 模板章节                     | 推荐参数                                     |
-| ------------------------------- | -------- | ---------------------------- | -------------------------------------------- |
-| "做个 logo / 图标 / 品牌主视觉" | logo     | prompt-template.md § logo    | t2i，`--aspect 1:1`，简洁背景                |
-| "做个 IP / 吉祥物 / 角色形象"   | IP 角色  | prompt-template.md § IP      | t2i，`--aspect 3:4` 或 `1:1`，3D/潮玩风      |
-| "产品图 / 衍生图 / 周边视觉"    | 产品衍生 | prompt-template.md § product | t2i，`--aspect 4:3` 或 `1:1`，居中陈列       |
-
-> ⚠️ 出图模型是**图像生成**模型，logo/图标类图形设计（精确几何、矢量文字）非其强项。出图是"插画感的 logo/角色"，**不是可用的矢量设计稿**。需精确矢量 logo → 用专门设计工具，不要硬跑。
+Video duration presets (num_frames, frame_rate, all 8n+1): `3s`=(81,24) · `5s`=(121,24) · `10s`=(241,24) · `18s`=(441,24).
+Video resolution presets (W,H): `16:9`=(1152,768) · `9:16`=(768,1152) · `1:1`=(960,960) · `4:3`=(1024,768) · `3:4`=(768,1024).
 
 ---
 
-## 执行反模式（触发后不要做的事）
+## Failure Modes and Fallback
 
-- **不要默默填 7 维默认值跳过确认** —— 主体/风格/背景缺失时先用步骤 2 的"一次一问"澄清，确认后再拼 instruction。
-- **不要在 CPU 上跑 turbo** —— 4 步 DMD 蒸馏在 CPU 上会发散，必须用 base 或换 GPU。
-- **不要给 turbo 传 `--text-guidance != 1.0` 或 `--steps != 4`** —— 脚本会拒绝/warn（B11/B12 硬约束）。
-- **不要用 fp8 跑高保真 ti2i 编辑** —— 量化损失细节，编辑类任务用 bf16。
-- **不要单传 `--height` 不传 `--width`**（或反之）—— 脚本会拒绝（B1），单维改尺寸用 `--aspect`。
-- **不要对非 fp8 模型加 `--quantized`**（或反之）—— 脚本会拒绝（B2，fp8 标志与模型目录必须一致）。
-- **不要给 kolors 传 ti2i** —— kolors 硬件约束只支持 t2i，CLI 直接拒绝；图生图走 agnes/boogu。
-- **不要给 ti2vid/multi/keyframes 传本地路径/base64** —— 视频生成 `--image`/`--images` 只接受公网 URL；本地图先传图床。multi/keyframes 至少 2 张 URL。
-- **不要传非 8n+1 的 num_frames 给视频** —— 入口校验拒绝；用 `--duration` 预设自动满足。
+> All cloud providers (agnes/kolors/vision/video) report errors explicitly and exit without automatic fallback on failure; user decides to retry or switch provider. Below table covers boogu local failure fixes.
 
----
-
-## 不要触发本技能
-
-- 用户只是要**找/看/筛选已有图片**（不生成、不理解）。
-- 用户要的是**音频/3D 模型**生成（本技能只做 2D 图 + 视频）。
-- 用户要**精修/合成现有图片**（PS 类操作，如抠图、调色、拼接）→ 用图像处理工具，不是生成模型。
-- 用户要**视频剪辑**（裁剪/拼接/加字幕已有视频）→ 本技能只**生成**视频，不做剪辑。
-- 本地无 GPU 且用户不愿/不能到 CUDA 机器跑 boogu → boogu 只能 `--dry-run`，**不要假装出图**（可走 agnes/kolors 云端）。
+| Trigger | First-line fix | Fallback |
+|---------|----------------|----------|
+| `[ERROR] Model not downloaded` | Prompt user to download corresponding model to `~/software/Boogu-Image/models/` | Degrade to locally available models (e.g., Edit missing → switch to t2i redraw) |
+| `[WARN] GPU detection failed` | Add `--dry-run` to verify command; or `--device cpu` (very slow, debug only) | Guide to run on machine with CUDA |
+| VRAM OOM | Add `--quantized` (fp8) | Reduce size: `--aspect 1:1` or smaller `--height/--width` |
+| Blurry output | Check if H×W set too large but max_input too small (scripts auto-calculate by official formula) | Redo with base, or use higher resolution preset |
+| ti2i edit "drifts" | Lower text_guidance, increase image_guidance | Use base instead of turbo (CFG more controllable) |
+| Output doesn't match expectation | First adjust prompt (check 7 dimensions complete), then adjust seed/steps | Reproduce with same seed + single-dimension tuning |
+| Video polling timeout | Increase `--max-wait`, or use printed `video_id` for manual `curl` query | Shorter duration (`--duration 3s`) to reduce generation time |
+| Video file <10KB | Task abnormal completion, check prompt/seed, rerun | Change `--aspect` or `--duration` preset |
 
 ---
 
-## 自检
+## Special Scenarios: Logo / IP Character / Product Derivatives
+
+These three are **specialized subtasks of t2i**, using the same image generation backend (agnes/kolors/boogu all work), **only prompt templates differ**. Read corresponding sections in [`references/prompt-template.md`](references/prompt-template.md):
+
+| User says... | Task Type | Template Section | Recommended Parameters |
+|-------------|-----------|------------------|----------------------|
+| "Make a logo / icon / brand visual" | Logo | prompt-template.md § logo | t2i, `--aspect 1:1`, clean background |
+| "Make an IP / mascot / character" | IP character | prompt-template.md § IP | t2i, `--aspect 3:4` or `1:1`, 3D/trendy toy style |
+| "Product image / derivative / merch visual" | Product derivative | prompt-template.md § product | t2i, `--aspect 4:3` or `1:1`, centered display |
+
+> ⚠️ Image generation models are for **image generation**, not strong at logo/icon graphic design (precise geometry, vector text). Output is "illustration-style logo/character", **not usable vector design files**. For precise vector logos → use specialized design tools, don't force generation.
+
+---
+
+## Execution Anti-patterns (Don't do these)
+
+- **Don't silently fill 7-dimension defaults to skip confirmation** — When subject/style/background missing, first use Step 2's "one question at a time" for clarification, confirm, then assemble instruction.
+- **Don't run turbo on CPU** — 4-step DMD distillation diverges on CPU, must use base or switch to GPU.
+- **Don't pass `--text-guidance != 1.0` or `--steps != 4` to turbo** — Script will reject/warn (B11/B12 hard constraints).
+- **Don't use fp8 for high-fidelity ti2i editing** — Quantization loses details, use bf16 for editing tasks.
+- **Don't pass only `--height` without `--width`** (or vice versa) — Script will reject (B1), single-dimension size change uses `--aspect`.
+- **Don't add `--quantized` to non-fp8 models** (or vice versa) — Script will reject (B2, fp8 flag must match model directory).
+- **Don't pass ti2i to kolors** — kolors hardware constraints only support t2i, CLI directly rejects; image-to-image uses agnes/boogu.
+- **Don't pass local paths/base64 to ti2vid/multi/keyframes** — Video generation `--image`/`--images` only accept public URLs; upload local images first. multi/keyframes require ≥2 URLs.
+- **Don't pass non-8n+1 num_frames to video** — Entry validation rejects; use `--duration` presets for automatic compliance.
+
+---
+
+## Don't Trigger This Skill
+
+- User only wants to **find/view/filter existing images** (no generation, no understanding).
+- User wants **audio/3D model** generation (this skill only does 2D images + video).
+- User wants to **retouch/composite existing images** (PS-like operations, e.g., matting, color grading, compositing) → Use image processing tools, not generation models.
+- User wants **video editing** (trim/merge/add subtitles to existing video) → This skill only **generates** video, doesn't edit.
+- No local GPU and user unwilling/unable to run boogu on CUDA machine → boogu can only use `--dry-run`, **don't pretend to generate** (can use agnes/kolors cloud).
+
+---
+
+## Self-check
 
 ```bash
-python3 scripts/agnes.py  __selfcheck__   # 出图 agnes：纯函数 + key 存在性
-python3 scripts/kolors.py __selfcheck__   # 出图 kolors：纯函数 + image_size 表 + key 存在性
-python3 scripts/boogu.py  __selfcheck__   # 出图 boogu：矩阵查表/16 对齐/资源探测
-python3 scripts/vision.py __selfcheck__   # 图片理解：双 provider 表 + data URI + key 存在性
-python3 scripts/video.py  __selfcheck__   # 视频生成：8n+1 规则 + 分辨率/时长预设 + key 存在性
-python3 -m pytest scripts/               # 全量单元测试（5 脚本，不打真实 API/模型）
+python3 scripts/agnes.py  __selfcheck__   # Image generation agnes: pure functions + key existence
+python3 scripts/kolors.py __selfcheck__   # Image generation kolors: pure functions + image_size table + key existence
+python3 scripts/boogu.py  __selfcheck__   # Image generation boogu: matrix lookup/16-alignment/resource detection
+python3 scripts/vision.py __selfcheck__   # Image understanding: dual provider table + data URI + key existence
+python3 scripts/video.py  __selfcheck__   # Video generation: 8n+1 rule + resolution/duration presets + key existence
+python3 -m pytest scripts/               # Full unit tests (5 scripts, no real API/model calls)
 ```

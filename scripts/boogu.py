@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""wudaozi —— Boogu-Image 文生图/图生图包装脚本。
+"""wudaozi — Boogu-Image text-to-image/image-to-image wrapper script.
 
-核心职责（确定性逻辑，纯查找表，不交给模型决策）：
-1. 模型矩阵路由：根据 (mode, turbo, quantized) 选官方脚本 + 模型目录
-2. 默认参数填充：turbo(4步/无CFG) vs base(50步/CFG) 的关键差异
-3. 随机种子：未指定时生成并回显（可复现）
-4. 输出路径：默认 $PWD/boogu-output/，文件名含 mode+seed+时间戳防覆盖
-5. 资源探测：venv / 模型本地存在性 / GPU 可用性，缺失即明确报错
-6. 透传官方 inference.py / inference_turbo.py，不重写推理逻辑
+Core responsibilities (deterministic logic, pure lookup table, not delegated to model):
+1. Model matrix routing: select official script + model directory by (mode, turbo, quantized)
+2. Default parameter filling: turbo (4 steps/no CFG) vs base (50 steps/CFG) key differences
+3. Random seed: generate and echo when not specified (for reproducibility)
+4. Output path: default $PWD/boogu-output/, filename includes mode+seed+timestamp to prevent overwriting
+5. Resource detection: venv / model local availability / GPU availability, report errors explicitly when missing
+6. Passthrough to official inference.py / inference_turbo.py, don't rewrite inference logic
 
-使用：
+Usage:
     python boogu.py t2i --instruction "..." --aspect 1:1
     python boogu.py ti2i --instruction "..." --input img.png --turbo
-    python boogu.py t2i --instruction "..." --dry-run   # 只构造命令不执行
+    python boogu.py t2i --instruction "..." --dry-run   # Only construct command, don't execute
 """
-# ponytail: 透传官方脚本而非重写推理；矩阵决策是确定性查找表，符合 CLAUDE.md「确定性逻辑禁止交给模型」。
+# ponytail: Passthrough to official scripts rather than rewriting inference; matrix decision is deterministic lookup table, follows CLAUDE.md "deterministic logic must not be delegated to model".
 
 import argparse
 import os
@@ -26,7 +26,7 @@ import uuid
 from pathlib import Path
 
 # ============================================================================
-# 资源定位
+# Resource Location
 # ============================================================================
 BOOGU_DIR = Path(__file__).resolve().parents[3] / "software" / "Boogu-Image"
 if not BOOGU_DIR.exists():
@@ -36,10 +36,10 @@ VENV_PYTHON = BOOGU_DIR / ".venv" / "bin" / "python"
 MODELS_DIR = BOOGU_DIR / "models"
 
 # ============================================================================
-# 模型矩阵 —— 8 种组合（2 模式 × 2 速度 × 2 量化）
+# Model Matrix — 8 combinations (2 modes × 2 speeds × 2 quantizations)
 # ============================================================================
 MATRIX = {
-    # (mode,    turbo,  quant) : 模型目录名
+    # (mode,    turbo,  quant) : Model directory name
     ("t2i", False, False): "Boogu-Image-0.1-Base",
     ("t2i", False, True): "Boogu-Image-0.1-Base-fp8",
     ("t2i", True, False): "Boogu-Image-0.1-Turbo",
@@ -51,62 +51,62 @@ MATRIX = {
 }
 SCRIPT_FOR_TURBO = {False: "inference.py", True: "inference_turbo.py"}
 
-# turbo 的 DMD 默认 sigma（来自官方 inference_turbo_simple.py / test_ti2i_turbo.sh）
+# Turbo's DMD default sigma (from official inference_turbo_simple.py / test_ti2i_turbo.sh)
 TURBO_T2I_SIGMA = 0.001
 TURBO_TI2I_SIGMA = 0.0
 
-# A7：通用负向提示模板。未指定 --negative-instruction 时透传，避免 LLM 忘记带。
+# A7: General negative prompt template. Passed through when --negative-instruction not specified, prevents LLM from forgetting.
 DEFAULT_NEGATIVE = (
     "模糊, 低品质, 变形, 多余的手指, 透视错误, 水印, 文字, 签名, 过曝, JPEG 伪影"
 )
 
 # ============================================================================
-# 宽高比预设 —— 全部对齐 16 倍数，长边 ≤ 2048（模型原生 2K 上限）
+# Aspect Ratio Presets — all aligned to 16 multiples, longest side ≤ 2048 (model native 2K limit)
 # ============================================================================
 ASPECT_RATIOS = {
-    # 元组语义 (H, W)；竖屏 H>W，横屏 W>H。aspect 表示 W:H。
+    # Tuple semantics (H, W); portrait H>W, landscape W>H. aspect means W:H.
     "1:1": (1024, 1024),
-    "3:4": (1360, 1024),  # 竖
-    "4:3": (1024, 1360),  # 横
-    "2:3": (1536, 1024),  # 竖
-    "3:2": (1024, 1536),  # 横
-    "9:16": (1824, 1024),  # 手机竖屏
-    "16:9": (1024, 1824),  # 横
+    "3:4": (1360, 1024),  # portrait
+    "4:3": (1024, 1360),  # landscape
+    "2:3": (1536, 1024),  # portrait
+    "3:2": (1024, 1536),  # landscape
+    "9:16": (1824, 1024),  # mobile portrait
+    "16:9": (1024, 1824),  # landscape
 }
 assert all(h % 16 == 0 and w % 16 == 0 for h, w in ASPECT_RATIOS.values()), (
-    "宽高比须 16 对齐"
+    "Aspect ratios must be 16-aligned"
 )
 
 
 def align16(n: int) -> int:
-    """向下对齐到 16 的倍数（模型硬约束）。"""
+    """Align down to nearest multiple of 16 (model hard constraint)."""
     return max(16, (n // 16) * 16)
 
 
 def gen_seed() -> int:
-    """生成随机种子（未指定时用）。"""
+    """Generate random seed (used when not specified)."""
     return random.randint(0, 2**31 - 1)
 
 
 # ============================================================================
-# 资源探测
+# Resource Detection
 # ============================================================================
 def check_resources(mode: str, turbo: bool, quantized: bool, need_gpu: bool):
-    """探测 venv / 模型 / GPU，缺失即 sys.exit 并给出可执行修复建议。"""
+    """Detect venv / model / GPU; exit with actionable fix suggestions when missing."""
     errors, warnings = [], []
 
     if not BOOGU_DIR.exists():
-        errors.append(f"Boogu-Image 目录不存在: {BOOGU_DIR}")
+        errors.append(f"Boogu-Image directory does not exist: {BOOGU_DIR}")
     if not VENV_PYTHON.exists():
         errors.append(
-            f"venv python 不存在: {VENV_PYTHON}（在 {BOOGU_DIR} 下创建 .venv）"
+            f"venv python does not exist: {VENV_PYTHON} (create .venv under {BOOGU_DIR})"
         )
 
     model_name = MATRIX[(mode, turbo, quantized)]
-    # B2：fp8 标志与模型目录名一致性（不匹配会让官方脚本加载错权重分支而崩溃）
+    # B2: fp8 flag must match model directory name (mismatch causes official script to load wrong weight branch and crash)
     if model_name.endswith("-fp8") != quantized:
         errors.append(
-            f"fp8 标志与模型不匹配：模型={model_name}，--quantized={quantized}"
+            f"fp8 flag mismatch with model: model={model_name}, --quantized={quantized}"
         )
     model_path = MODELS_DIR / model_name
     if not model_path.exists():
@@ -116,9 +116,9 @@ def check_resources(mode: str, turbo: bool, quantized: bool, need_gpu: bool):
             else []
         )
         errors.append(
-            f"模型未下载: models/{model_name}\n"
-            f"  本地已有: {local or '（无）'}\n"
-            f"  修复：下载该模型到 {MODELS_DIR}/，或换用本地已存在的模型组合"
+            f"Model not downloaded: models/{model_name}\n"
+            f"  Local available: {local or '(none)'}\n"
+            f"  Fix: download this model to {MODELS_DIR}/, or switch to locally available model combination"
         )
 
     if need_gpu:
@@ -135,24 +135,24 @@ def check_resources(mode: str, turbo: bool, quantized: bool, need_gpu: bool):
             subprocess.TimeoutExpired,
         ):
             warnings.append(
-                "GPU 探测失败（nvidia-smi 不可用 / NVML 被拦截）。"
-                "如确认无 CUDA，加 --dry-run 仅构造命令；或换 --device cpu（极慢）。"
+                "GPU detection failed (nvidia-smi unavailable / NVML blocked)."
+                "If confirmed no CUDA, add --dry-run to only construct command; or use --device cpu (very slow)."
             )
 
     for w in warnings:
         print(f"[WARN] {w}", file=sys.stderr)
     if errors:
-        print("[ERROR] 资源探测未通过：", file=sys.stderr)
+        print("[ERROR] Resource detection failed:", file=sys.stderr)
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
         sys.exit(2)
 
 
 # ============================================================================
-# 命令构造
+# Command Construction
 # ============================================================================
 def build_args(a: argparse.Namespace, height: int, width: int, out_path: Path) -> list:
-    """组装透传给官方脚本的参数列表（含默认值差异化填充）。"""
+    """Assemble parameter list for passthrough to official script (with default value differentiation)."""
     args = [
         "--pretrained_pipeline_name_or_path",
         str(MODELS_DIR / MATRIX[(a.mode, a.turbo, a.quantized)]),
@@ -168,17 +168,17 @@ def build_args(a: argparse.Namespace, height: int, width: int, out_path: Path) -
         str(out_path),
         "--device",
         a.device,
-        # max_input 系列：按官方推荐公式自动算（保证原生分辨率清晰度）
+        # max_input series: auto-calculated by official recommended formula (ensures native resolution clarity)
         "--max_input_image_pixels",
         str(height * width),
         "--max_input_image_side_length",
         str(2 * max(height, width)),
     ]
 
-    # 16GB VRAM 环境下 10B 模型必须用 seq CPU offload
+    # 16GB VRAM environment requires sequential CPU offload for 10B models
     args += ["--enable_sequential_cpu_offload_flag", "True"]
 
-    # B5/A7：None→透传默认负向模板；非空→透传用户值；空字符串→明确禁用不透传
+    # B5/A7: None → passthrough default negative template; non-empty → passthrough user value; empty string → explicitly disabled, don't passthrough
     if a.negative_instruction is None:
         args += ["--negative_instruction", DEFAULT_NEGATIVE]
     elif a.negative_instruction.strip():
@@ -187,7 +187,7 @@ def build_args(a: argparse.Namespace, height: int, width: int, out_path: Path) -
     if a.mode == "ti2i":
         args += ["--input_image_paths", str(a.input)]
 
-    # 步数与 CFG：turbo vs base 关键差异
+    # Steps and CFG: key difference between turbo vs base
     if a.turbo:
         if a.steps is None:
             args += ["--num_inference_steps", "4"]
@@ -217,16 +217,16 @@ def build_args(a: argparse.Namespace, height: int, width: int, out_path: Path) -
 
 
 def resolve_size(a: argparse.Namespace) -> tuple:
-    """解析最终 H×W：aspect > height/width > 默认 1:1。"""
+    """Resolve final H×W: aspect > height/width > default 1:1."""
     if a.aspect:
         return ASPECT_RATIOS[a.aspect]
-    # B1：height/width 必须同时提供，单传会静默退回 1:1（竖图变正方形，意图丢失）
+    # B1: height/width must be provided together; single parameter silently falls back to 1:1 (portrait becomes square, intent lost)
     if (a.height is None) != (a.width is None):
-        sys.exit("[ERROR] --height 与 --width 必须同时提供；单传请改用 --aspect 预设")
+        sys.exit("[ERROR] --height and --width must be provided together; use --aspect presets for single dimension")
     if a.height and a.width:
         h, w = align16(a.height), align16(a.width)
         if max(h, w) > 2048:
-            sys.exit(f"[ERROR] 长边 {max(h, w)} 超模型上限 2048")
+            sys.exit(f"[ERROR] Longest side {max(h, w)} exceeds model limit 2048")
         return h, w
     return ASPECT_RATIOS["1:1"]
 
@@ -237,34 +237,34 @@ def resolve_output(a: argparse.Namespace, height: int, width: int) -> Path:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
-    suffix = uuid.uuid4().hex[:8]  # B8：防同秒并发/批量出图文件名冲突
+    suffix = uuid.uuid4().hex[:8]  # B8: Prevent same-second concurrent/batch output filename conflicts
     variant = ("turbo" if a.turbo else "base") + ("_fp8" if a.quantized else "_bf16")
     fname = f"boogu_{a.mode}_{variant}_{a.seed}_{width}x{height}_{ts}_{suffix}.png"
     return out_dir / fname
 
 
 # ============================================================================
-# 参数语义校验
+# Parameter Semantic Validation
 # ============================================================================
 def validate_args(a: argparse.Namespace) -> None:
-    """校验参数语义硬约束（turbo DMD 推理规则等），违反即 sys.exit。"""
+    """Validate parameter semantic hard constraints (turbo DMD inference rules, etc.), exit on violation."""
     if a.mode == "ti2i" and not a.input:
-        sys.exit("[ERROR] 图生图(ti2i)必须提供 --input 参考图路径")
+        sys.exit("[ERROR] Image-to-image (ti2i) requires --input reference image path")
     if not (30 <= len(a.instruction) <= 400):
         print(
-            f"[WARN] instruction 长度 {len(a.instruction)} 不在推荐 30-400 字区间",
+            f"[WARN] instruction length {len(a.instruction)} not in recommended 30-400 character range",
             file=sys.stderr,
         )
     if a.turbo:
-        # B12：turbo 是 DMD 学生推理，text_guidance 必须 = 1.0（官方硬约束）
+        # B12: turbo is DMD student inference, text_guidance must = 1.0 (official hard constraint)
         if a.text_guidance is not None and abs(a.text_guidance - 1.0) > 1e-3:
             sys.exit(
-                "[ERROR] turbo 模式 text_guidance 必须 = 1.0（DMD 学生推理硬约束）"
+                "[ERROR] turbo mode text_guidance must = 1.0 (DMD student inference hard constraint)"
             )
-        # B11：turbo 为 4 步 DMD 蒸馏调优，改 steps 易发散
+        # B11: turbo is 4-step DMD distillation, changing steps may cause divergence
         if a.steps is not None and a.steps != 4:
             print(
-                f"[WARN] turbo 是 4 步 DMD 蒸馏，当前 steps={a.steps} 可能发散",
+                f"[WARN] turbo is 4-step DMD distillation, current steps={a.steps} may diverge",
                 file=sys.stderr,
             )
 
@@ -275,108 +275,108 @@ def validate_args(a: argparse.Namespace) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="boogu.py",
-        description="wudaozi —— Boogu-Image 文生图/图生图包装（模型矩阵 + 默认值 + 种子 + 输出路径）",
+        description="wudaozi — Boogu-Image text-to-image/image-to-image wrapper (model matrix + defaults + seed + output path)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
-示例：
-  # 文生图，1:1，base，自动随机种子
-  python boogu.py t2i --instruction "一只在月光下的橘猫，电影感"
+Examples:
+  # Text-to-image, 1:1, base, auto random seed
+  python boogu.py t2i --instruction "an orange cat under moonlight, cinematic"
 
-  # 文生图，turbo + 竖屏 9:16，指定种子复现
+  # Text-to-image, turbo + portrait 9:16, specified seed for reproducibility
   python boogu.py t2i --instruction "..." --turbo --aspect 9:16 --seed 42
 
-  # 图生图（编辑），fp8 量化省显存
-  python boogu.py ti2i --instruction "把背景换成沙滩" --input photo.jpg --quantized
+  # Image-to-image (editing), fp8 quantization to save VRAM
+  python boogu.py ti2i --instruction "change background to beach" --input photo.jpg --quantized
 
-  # 只看会跑什么命令，不真跑（无 GPU 时调试用）
+  # Only view what command would run, don't actually run (for debugging without GPU)
   python boogu.py t2i --instruction "..." --dry-run
 
-宽高比预设: """
+Aspect ratio presets: """
         + ", ".join(f"{k}={v[0]}x{v[1]}" for k, v in ASPECT_RATIOS.items()),
     )
     p.add_argument(
-        "mode", choices=["t2i", "ti2i"], help="t2i=文生图, ti2i=图生图(编辑)"
+        "mode", choices=["t2i", "ti2i"], help="t2i=text-to-image, ti2i=image-to-image (editing)"
     )
     p.add_argument(
         "--instruction",
         "-i",
         required=True,
-        help="生成指令（建议先经 SKILL.md 结构化）",
+        help="Generation instruction (recommended to structure via SKILL.md first)",
     )
     p.add_argument(
         "--negative-instruction",
         default=None,
-        help="负向提示；不传则用内置通用模板，传空字符串禁用",
+        help="Negative prompt; not passed uses built-in general template, empty string disables",
     )
-    p.add_argument("--input", help="ti2i 参考图路径（ti2i 必填）")
+    p.add_argument("--input", help="ti2i reference image path (required for ti2i)")
 
-    # ponytail: aspect 与 H/W 的互斥由 resolve_size 统一校验（aspect 优先）；
-    # height/width 须配套同传，单传由 resolve_size 拒绝。不入 argparse 互斥组以保持对称。
+    # ponytail: aspect vs H/W mutual exclusion unified by resolve_size (aspect takes priority);
+    # height/width must be paired; single parameter rejected by resolve_size. Not using argparse mutual exclusion group to maintain symmetry.
     p.add_argument(
         "--aspect",
         choices=list(ASPECT_RATIOS),
-        help="宽高比预设（优先于 --height/--width）",
+        help="Aspect ratio preset (takes priority over --height/--width)",
     )
     p.add_argument(
         "--height",
         type=int,
-        help="输出高度（须与 --width 同传，16 对齐，模型上限 2048）",
+        help="Output height (must be provided with --width, 16-aligned, model limit 2048)",
     )
-    p.add_argument("--width", type=int, help="输出宽度（须与 --height 同传，16 对齐）")
+    p.add_argument("--width", type=int, help="Output width (must be provided with --height, 16-aligned)")
 
     p.add_argument(
         "--turbo",
         action="store_true",
-        help="用 turbo 模型（4 步 DMD，快约 10×，无 CFG）",
+        help="Use turbo model (4-step DMD, ~10× faster, no CFG)",
     )
     p.add_argument(
         "--quantized",
         action="store_true",
-        help="用 fp8 量化模型（省约 50%% 显存，画质略降）",
+        help="Use fp8 quantized model (saves ~50%% VRAM, slight quality loss)",
     )
     p.add_argument(
-        "--seed", type=int, default=None, help="随机种子；不传则自动生成并回显"
+        "--seed", type=int, default=None, help="Random seed; if not provided, auto-generated and echoed"
     )
     p.add_argument(
-        "--steps", type=int, default=None, help="覆盖默认步数（base=50, turbo=4）"
+        "--steps", type=int, default=None, help="Override default steps (base=50, turbo=4)"
     )
     p.add_argument(
         "--text-guidance",
         type=float,
         default=None,
-        help="覆盖默认 text CFG（base=4.0, turbo=1.0）",
+        help="Override default text CFG (base=4.0, turbo=1.0)",
     )
     p.add_argument(
         "--dmd-sigma",
         type=float,
         default=None,
-        help="覆盖 turbo 默认 dmd_conditioning_sigma",
+        help="Override turbo default dmd_conditioning_sigma",
     )
     p.add_argument(
-        "--device", default="cuda:0", help="设备（默认 cuda:0；无 GPU 试 cpu）"
+        "--device", default="cuda:0", help="Device (default cuda:0; try cpu if no GPU)"
     )
     p.add_argument(
-        "--output-dir", "-o", default=None, help="输出目录（默认 $PWD/boogu-output/）"
+        "--output-dir", "-o", default=None, help="Output directory (default $PWD/boogu-output/)"
     )
-    p.add_argument("--dry-run", action="store_true", help="只打印命令不执行")
+    p.add_argument("--dry-run", action="store_true", help="Only print command, don't execute")
     return p.parse_args()
 
 
 def main() -> int:
     a = parse_args()
-    validate_args(a)  # ti2i 必填 + turbo 硬约束（B11/B12）
+    validate_args(a)  # ti2i required + turbo hard constraints (B11/B12)
 
     if a.seed is None:
         a.seed = gen_seed()
         print(
-            f"[INFO] 未指定 --seed，已生成 seed={a.seed}（复现请加 --seed {a.seed}）",
+            f"[INFO] --seed not specified, generated seed={a.seed} (add --seed {a.seed} to reproduce)",
             file=sys.stderr,
         )
 
     height, width = resolve_size(a)
     out_path = resolve_output(a, height, width)
 
-    # B3：dry-run 跳过资源检查，让无 GPU/无模型的机器也能构造命令
+    # B3: dry-run skips resource check, allowing machines without GPU/model to construct commands
     if not a.dry_run:
         check_resources(
             a.mode,
@@ -391,29 +391,29 @@ def main() -> int:
 
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{BOOGU_DIR}:{env.get('PYTHONPATH', '')}"
-    # ponytail: env["device"] 兼容官方 test_*.sh 的 shell 别名读取；argparse --device 是主通道（B15 暂留）。
+    # ponytail: env["device"] compatible with official test_*.sh shell alias reading; argparse --device is the primary channel (B15 placeholder).
     env["device"] = a.device
 
-    print(f"[INFO] 模式={a.mode} turbo={a.turbo} 量化={a.quantized}", file=sys.stderr)
+    print(f"[INFO] mode={a.mode} turbo={a.turbo} quantized={a.quantized}", file=sys.stderr)
     print(
-        f"[INFO] 模型={MATRIX[(a.mode, a.turbo, a.quantized)]} 尺寸={width}x{height}",
+        f"[INFO] model={MATRIX[(a.mode, a.turbo, a.quantized)]} size={width}x{height}",
         file=sys.stderr,
     )
-    print(f"[INFO] 输出={out_path}", file=sys.stderr)
+    print(f"[INFO] output={out_path}", file=sys.stderr)
     print(f"[CMD] {' '.join(cmd)}", file=sys.stderr)
 
     if a.dry_run:
-        print("[DRY-RUN] 未执行（无 GPU / 调试时用）", file=sys.stderr)
+        print("[DRY-RUN] Not executed (no GPU / for debugging)", file=sys.stderr)
         return 0
 
     try:
         result = subprocess.run(cmd, cwd=str(BOOGU_DIR), env=env)
     except KeyboardInterrupt:
         out_path.unlink(missing_ok=True)
-        print("[CANCEL] 用户中断，已清理半成品", file=sys.stderr)
+        print("[CANCEL] User interrupted, cleaned up partial output", file=sys.stderr)
         return 130
 
-    # B18/B20：失败清理半成品 + 成功校验文件大小，避免静默成功/数据丢失
+    # B18/B20: Clean up partial output on failure + validate file size on success, prevent silent success/data loss
     if (
         result.returncode != 0
         or not out_path.exists()
@@ -421,13 +421,13 @@ def main() -> int:
     ):
         out_path.unlink(missing_ok=True)
         print(
-            f"[FAIL] 退出码={result.returncode} seed={a.seed} "
-            f"模型={MATRIX[(a.mode, a.turbo, a.quantized)]}",
+            f"[FAIL] exit_code={result.returncode} seed={a.seed} "
+            f"model={MATRIX[(a.mode, a.turbo, a.quantized)]}",
             file=sys.stderr,
         )
         return result.returncode or 1
     print(
-        f"[OK] 已生成: {out_path} ({out_path.stat().st_size // 1024} KB)",
+        f"[OK] Generated: {out_path} ({out_path.stat().st_size // 1024} KB)",
         file=sys.stderr,
     )
     return 0
@@ -436,7 +436,7 @@ def main() -> int:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] != "__selfcheck__":
         sys.exit(main())
-    # ponytail: 自检 —— 验证矩阵查表与 16 对齐，不依赖 GPU/模型。
+    # ponytail: Self-check — validates matrix lookup and 16-alignment, no GPU/model dependency.
     print("== wudaozi self-check ==")
     for key, name in MATRIX.items():
         assert name.startswith("Boogu-Image-0.1-"), key
@@ -444,18 +444,18 @@ if __name__ == "__main__":
         assert h % 16 == 0 and w % 16 == 0
     assert align16(1365) == 1360
     assert align16(17) == 16
-    print(f"  矩阵组合: {len(MATRIX)} 种")
-    print(f"  宽高比预设: {len(ASPECT_RATIOS)} 种，全部 16 对齐")
+    print(f"  Matrix combinations: {len(MATRIX)}")
+    print(f"  Aspect ratio presets: {len(ASPECT_RATIOS)}, all 16-aligned")
     print(
-        f"  Boogu-Image 目录: {BOOGU_DIR} ({'存在' if BOOGU_DIR.exists() else '缺失'})"
+        f"  Boogu-Image directory: {BOOGU_DIR} ({'exists' if BOOGU_DIR.exists() else 'missing'})"
     )
     print(
-        f"  venv python: {VENV_PYTHON} ({'存在' if VENV_PYTHON.exists() else '缺失'})"
+        f"  venv python: {VENV_PYTHON} ({'exists' if VENV_PYTHON.exists() else 'missing'})"
     )
     local = (
         sorted(p.name for p in MODELS_DIR.glob("Boogu-Image-0.1-*"))
         if MODELS_DIR.exists()
         else []
     )
-    print(f"  本地模型: {local or '（无）'}")
+    print(f"  Local models: {local or '(none)'}")
     print("  self-check PASS")
