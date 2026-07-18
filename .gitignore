@@ -1,11 +1,17 @@
 __pycache__/
 *.pyc
 boogu-output/
+agnes-output/
+kolors-output/
+video-output/
 .venv/
 
 # Python cache
 .pytest_cache/
 .ruff_cache/
-# Specmark/openspec 临时产物
+# Specmark/openspec 临时产物（specmark/ 全局规则30强制不入 git）
 openspec/
+specmark/
+logs/
+.claude/
 results.tsv
