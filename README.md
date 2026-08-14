@@ -17,14 +17,14 @@ All cloud providers report errors explicitly without automatic fallback (to avoi
 
 ### Method 1: Install via `skills` package (Recommended)
 
-Requires [Node.js](https://nodejs.org/) 18+ and `skills` npm package (v1.5.12+). `skills` is the CLI for open agent skills ecosystem, supporting 68+ agents (Claude Code / Trae / Cursor / Codex / OpenCode etc.).
+Requires [Node.js](https://nodejs.org/) 18+ and `skills` npm package (v1.5.12+). `skills` is the CLI for open agent skills ecosystem, supporting 68+ agents (Claude Code / Codex / Cursor / OpenCode etc.).
 
 ```bash
 # Install to Claude Code
 npx skills add Kirky-X/wudaozi --agent claude-code -y
 
-# Install to Trae
-npx skills add Kirky-X/wudaozi --agent trae -y
+# Install to Codex
+npx skills add Kirky-X/wudaozi --agent codex -y
 
 # List all discoverable skills in repository (without installing)
 npx skills add https://github.com/Kirky-X/wudaozi.git --list
@@ -38,7 +38,7 @@ npx skills add https://github.com/Kirky-X/wudaozi.git --list
 git clone https://github.com/Kirky-X/wudaozi.git
 # Copy SKILL.md + references/ + scripts/ to agent skills directory
 #   Claude Code:  ~/.claude/skills/wudaozi/
-#   Trae:         ~/.trae-cn/skills/wudaozi/
+#   Codex:        ~/.codex/skills/wudaozi/
 ```
 
 ### Configure API keys (required for cloud providers)
