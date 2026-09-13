@@ -237,7 +237,7 @@ Add by scenario:
 - [ ] Are all 7 dimensions complete? Which dimensions used defaults, and do they need user confirmation?
 - [ ] Are users' specified hard constraints (specific color, composition, person) included?
 - [ ] Is the intended medium consistent (photography ≠ painting ≠ 3D)?
-- [ ] Is the length between 30-200 characters? (Too short = insufficient info, too long = model diverges)
+- [ ] Is the length between 30-400 characters? (Too short = insufficient info, too long = model diverges; hard limit enforced by boogu.py)
 - [ ] Are negative prompts filled with general items?
 
 ---
