@@ -1,4 +1,4 @@
-# wudaozi — 多能力媒体生成 Skill
+# Wudaozi — 多能力媒体生成技能
 
 [![GitHub Release](https://img.shields.io/github/v/release/Kirky-X/wudaozi?style=flat-square)](https://github.com/Kirky-X/wudaozi/releases) [![GitHub License](https://img.shields.io/github/license/Kirky-X/wudaozi?style=flat-square)](LICENSE) [![Tests](https://img.shields.io/badge/pytest-149%20passing-brightgreen?style=flat-square)](#-测试与验证)
 

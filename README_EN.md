@@ -1,4 +1,4 @@
-# wudaozi — Multi-Capability Media Generation Skill
+# Wudaozi — Multi-Capability Media Generation Skill
 
 [![GitHub Release](https://img.shields.io/github/v/release/Kirky-X/wudaozi?style=flat-square)](https://github.com/Kirky-X/wudaozi/releases) [![GitHub License](https://img.shields.io/github/license/Kirky-X/wudaozi?style=flat-square)](LICENSE) [![Tests](https://img.shields.io/badge/pytest-149%20passing-brightgreen?style=flat-square)](#-tests--verification)
 
