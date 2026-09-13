@@ -53,30 +53,83 @@ SUPPORTED_MIME = {
     "gif": "image/gif",
 }
 
+# ── Absorbed from CookSleep/gpt_image_playground (2026-09-14) ──
+# Custom sizes snap to model-safe alignment (multiples of 16) instead of being
+# passed through raw or rejected; mirrors the playground's smart size control.
+SNAP_MULTIPLE = 16
+MIN_SIDE = 256
+MAX_SIDE = 2048
+# Batch generation: one turn, N images (playground: generate_image_batch).
+BATCH_MAX = 8
+BATCH_CONCURRENCY = 4
+# Anti-rewrite guard: some providers lightly rewrite prompts; this prefix asks
+# the model to treat the prompt verbatim (playground: prompt-rewrite protection).
+PROMPT_GUARD = (
+    "[Important] Please strictly follow the prompt below. Do not rewrite, extend, "
+    "or optimize it; generate exactly what is described. Prompt:\n"
+)
+# Local chroma-key background removal for --transparent-mode post
+# (playground: native transparent API param, or model paints solid chroma
+# background that is then removed client-side).
+CHROMA_RGB = {"magenta": (255, 0, 255), "green": (0, 255, 0)}
+CHROMA_PROMPT = {
+    "magenta": "The background must be a completely flat, uniform pure magenta (#FF00FF), with no gradients, shadows, or reflections on the background.",
+    "green": "The background must be a completely flat, uniform pure green (#00FF00), with no gradients, shadows, or reflections on the background.",
+}
+
+
+def snap_size(height: int, width: int) -> tuple:
+    """Snap custom H×W into the model-safe range: nearest multiple of 16,
+    clamped to MIN_SIDE/MAX_SIDE. Returns (H, W, adjustments) where adjustments
+    is a list of human-readable notices (empty when nothing changed).
+
+    Absorbed from gpt_image_playground: raw custom sizes are auto-normalized
+    (multiples of 16, total-pixel sanity) instead of hitting server 400s.
+    """
+    adjustments = []
+
+    def _snap(v: int, label: str) -> int:
+        snapped = max(MIN_SIDE, min(MAX_SIDE, round(v / SNAP_MULTIPLE) * SNAP_MULTIPLE))
+        if snapped != v:
+            adjustments.append(f"{label} {v} -> {snapped} (snapped to {SNAP_MULTIPLE}-multiple, range {MIN_SIDE}-{MAX_SIDE})")
+        return snapped
+
+    h = _snap(int(height), "height")
+    w = _snap(int(width), "width")
+    return h, w, adjustments
+
 
 def resolve_size(a: argparse.Namespace) -> tuple:
     """Resolve final H×W: aspect > height/width (must be provided together) > default 1:1.
 
-    ponytail: No 16-alignment/2048 cap — agnes limits unknown, let server 400 hint.
+    Custom sizes are snapped to 16-multiples via snap_size (absorbed from
+    gpt_image_playground); aspect presets are already aligned and pass through.
     """
     if a.aspect:
         return ASPECT_RATIOS[a.aspect]
     if (a.height is None) != (a.width is None):
         sys.exit("[ERROR] --height and --width must be provided together; use --aspect presets for single dimension")
     if a.height and a.width:
-        return a.height, a.width
+        h, w, adj = snap_size(a.height, a.width)
+        for notice in adj:
+            print(f"[INFO] size snap: {notice}", file=sys.stderr)
+        return h, w
     return ASPECT_RATIOS["1:1"]
 
 
-def resolve_output(a: argparse.Namespace, height: int, width: int) -> Path:
-    """Output path: default $PWD/agnes-output/, filename includes mode+size+timestamp+uuid8 to prevent overwriting."""
+def resolve_output(a: argparse.Namespace, height: int, width: int, index: int = 1) -> Path:
+    """Output path: default $PWD/agnes-output/, filename includes mode+size+timestamp+uuid8 to prevent overwriting.
+
+    When count > 1, a 1-based index suffix is appended for readability.
+    """
     out_dir = (
         Path(a.output_dir).resolve() if a.output_dir else Path.cwd() / "agnes-output"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     suffix = uuid.uuid4().hex[:8]
-    fname = f"agnes_{a.mode}_{width}x{height}_{ts}_{suffix}.png"
+    idx = f"_{index:02d}" if getattr(a, "count", 1) > 1 else ""
+    fname = f"agnes_{a.mode}_{width}x{height}_{ts}_{suffix}{idx}.png"
     return out_dir / fname
 
 
@@ -101,19 +154,36 @@ def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
     ⚠️ agnes size is a WxH string (documentation example 1024x768 is landscape), easy to reverse, must be tested and pinned.
     Default response_format=url (download); when --base64: t2i uses top-level return_base64,
     ti2i uses extra_body.response_format=b64_json.
+
+    Absorbed from gpt_image_playground:
+    - --strict-prompt: prefixes an anti-rewrite guard so the model treats the
+      prompt verbatim (playground: prompt-rewrite protection)
+    - --mask (ti2i): transparent-PNG mask as data URI in extra_body["mask"]
+      (OpenAI edits convention); agnes support needs live calibration — if the
+      provider rejects the field, drop --mask and use full-image ti2i
+    - --transparent native: extra_body["background"] = "transparent"
     """
+    if getattr(a, "mask", None) and a.mode != "ti2i":
+        sys.exit("[ERROR] --mask is only valid for ti2i (inpainting); t2i has no reference image to mask")
+    instruction = a.instruction
+    if getattr(a, "strict_prompt", False):
+        instruction = PROMPT_GUARD + instruction
+
     extra = {"response_format": "url"}
     if a.base64:
         extra = {} if a.mode == "t2i" else {"response_format": "b64_json"}
 
     body = {
         "model": MODEL,
-        "prompt": a.instruction,
+        "prompt": instruction,
         "size": f"{width}x{height}",  # WxH
         "extra_body": extra,
     }
     if a.base64 and a.mode == "t2i":
         body["return_base64"] = True
+
+    if getattr(a, "transparent", "off") == "native":
+        extra["background"] = "transparent"
 
     if a.mode == "ti2i":
         if not a.input:
@@ -125,6 +195,11 @@ def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
             else image_to_data_uri(a.input)
         )
         extra["image"] = [ref]
+        if getattr(a, "mask", None):
+            mask_uri = image_to_data_uri(a.mask)
+            if not mask_uri.startswith("data:image/png"):
+                sys.exit("[ERROR] --mask must be a local PNG (transparent areas mark the region to redraw)")
+            extra["mask"] = mask_uri
 
     return body
 
@@ -172,8 +247,11 @@ def _download(url: str, out_path: Path) -> None:
         sys.exit(f"[ERROR] Failed to download agnes returned URL: {e}")
 
 
-def save_image(resp_data: dict, out_path: Path) -> None:
-    """Response handling: data[0].url → download; data[0].b64_json → decode; missing → error."""
+def save_image(resp_data: dict, out_path: Path) -> dict:
+    """Response handling: data[0].url → download; data[0].b64_json → decode; missing → error.
+
+    Returns the data[0] item so callers can build sidecar metadata.
+    """
     if not resp_data.get("data"):
         sys.exit(f"[ERROR] agnes response has no data field: {resp_data}")
     item = resp_data["data"][0]
@@ -188,6 +266,55 @@ def save_image(resp_data: dict, out_path: Path) -> None:
     if out_path.stat().st_size < 1024:
         out_path.unlink(missing_ok=True)
         sys.exit("[FAIL] agnes returned image <1KB, likely abnormal")
+    return item
+
+
+def remove_chroma(png_path: Path, chroma: str, tolerance: int = 90) -> None:
+    """--transparent-mode post: remove the solid chroma background client-side.
+
+    Absorbed from gpt_image_playground's local post-processing mode: the model
+    paints a flat magenta/green background, this strips it to transparency.
+    Requires Pillow (optional dependency) — missing it fails loudly with the
+    install hint instead of silently skipping. Limitations (same as upstream):
+    hair-thin edges, semi-transparent materials, or subject colors close to the
+    chroma may keep residue; prefer --transparent-mode native when supported.
+    """
+    try:
+        from PIL import Image  # noqa: PLC0415 — optional dependency, imported lazily on purpose
+    except ImportError:
+        sys.exit(
+            "[ERROR] --transparent-mode post requires Pillow (optional dependency)\n"
+            "  → pip install Pillow and retry, or use --transparent-mode native"
+        )
+    img = Image.open(png_path).convert("RGBA")
+    pr, pg, pb = CHROMA_RGB[chroma]
+    pixels = img.load()
+    w, h = img.size
+    removed = 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = pixels[x, y]
+            if (
+                abs(r - pr) <= tolerance
+                and abs(g - pg) <= tolerance
+                and abs(b - pb) <= tolerance
+            ):
+                pixels[x, y] = (r, g, b, 0)
+                removed += 1
+    img.save(png_path, "PNG")
+    pct = removed * 100 // max(w * h, 1)
+    print(f"[INFO] chroma removal ({chroma}): {pct}% pixels -> transparent", file=sys.stderr)
+
+
+def write_sidecar(out_path: Path, meta: dict) -> Path:
+    """Absorbed from gpt_image_playground: per-image sidecar metadata (request
+    vs actually-effective parameters, elapsed time, revised prompt) for
+    reproducibility and audits. Returns the sidecar path."""
+    sidecar = out_path.with_suffix(".json")
+    sidecar.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return sidecar
 
 
 def to_curl(body: dict, api_key: str) -> str:
@@ -253,7 +380,94 @@ Aspect ratio presets: """
         help="Force base64 return (default url download)",
     )
     p.add_argument("--dry-run", action="store_true", help="Only print curl, don't execute")
-    return p.parse_args()
+    # ── Absorbed from gpt_image_playground ──
+    p.add_argument(
+        "--mask",
+        help="ti2i only: local PNG mask, transparent areas mark the region to redraw (OpenAI edits convention; agnes support needs calibration)",
+    )
+    p.add_argument(
+        "--transparent",
+        choices=["off", "native", "post"],
+        default="off",
+        help="transparent background: native = ask the API for an alpha channel; post = model paints flat chroma background, removed locally (needs Pillow). Ideal for icons/stickers",
+    )
+    p.add_argument(
+        "--chroma",
+        choices=["magenta", "green"],
+        default="magenta",
+        help="chroma color for --transparent post (default magenta)",
+    )
+    p.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="generate N images in one turn, concurrent (1-8)",
+    )
+    p.add_argument(
+        "--strict-prompt",
+        action="store_true",
+        help="prefix an anti-rewrite guard so the model renders the prompt verbatim",
+    )
+    a = p.parse_args()
+    if not 1 <= a.count <= BATCH_MAX:
+        p.error(f"--count must be 1-{BATCH_MAX}")
+    return a
+
+
+def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
+    """One generation round (index is 1-based, used for filenames when count > 1).
+
+    Returns the output path on success; raises SystemExit on failure (fail
+    loudly, per-image in batch mode).
+    """
+    height, width = resolve_size(a)
+    out_path = resolve_output(a, height, width, index)
+    started = time.monotonic()
+    body = build_body(a, height, width)
+
+    label = f"[{index}/{a.count}] " if a.count > 1 else ""
+    print(f"{label}[INFO] provider=agnes mode={a.mode} size={width}x{height}", file=sys.stderr)
+    print(f"{label}[INFO] output={out_path}", file=sys.stderr)
+    print(f"{label}[CMD] {to_curl(body, api_key)}", file=sys.stderr)
+
+    resp = call_api(body, api_key)
+    item = save_image(resp, out_path)
+
+    if a.transparent == "post":
+        remove_chroma(out_path, a.chroma)
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    sidecar = write_sidecar(
+        out_path,
+        {
+            "provider": "agnes",
+            "mode": a.mode,
+            "request": {
+                "instruction": a.instruction,
+                "size": f"{width}x{height}",
+                "aspect": a.aspect,
+                "transparent": a.transparent,
+                "chroma": a.chroma if a.transparent == "post" else None,
+                "mask": a.mask,
+                "strict_prompt": a.strict_prompt,
+                "count": a.count,
+                "index": index,
+            },
+            "actual": {
+                "output": str(out_path),
+                "bytes": out_path.stat().st_size,
+                "revised_prompt": item.get("revised_prompt"),
+                "usage": item.get("usage"),
+                "elapsed_ms": elapsed_ms,
+            },
+        },
+    )
+    print(
+        f"{label}[OK] Generated: {out_path} ({out_path.stat().st_size // 1024} KB, "
+        f"{elapsed_ms} ms) sidecar={sidecar.name}",
+        file=sys.stderr,
+    )
+    return out_path
 
 
 def main() -> int:
@@ -267,23 +481,39 @@ def main() -> int:
         )
 
     height, width = resolve_size(a)
-    out_path = resolve_output(a, height, width)
     body = build_body(a, height, width)
 
-    print(f"[INFO] provider=agnes mode={a.mode} size={width}x{height}", file=sys.stderr)
-    print(f"[INFO] output={out_path}", file=sys.stderr)
+    print(f"[INFO] provider=agnes mode={a.mode} size={width}x{height} count={a.count}", file=sys.stderr)
     print(f"[CMD] {to_curl(body, api_key)}", file=sys.stderr)
 
     if a.dry_run:
         print("[DRY-RUN] Not executed (no key / for debugging)", file=sys.stderr)
         return 0
 
-    resp = call_api(body, api_key)
-    save_image(resp, out_path)
-    print(
-        f"[OK] Generated: {out_path} ({out_path.stat().st_size // 1024} KB)",
-        file=sys.stderr,
-    )
+    if a.count == 1:
+        _generate_once(a, api_key, 1)
+        return 0
+
+    # Batch: concurrent with a small pool (playground generate_image_batch).
+    # Partial failures are collected and reported explicitly — never silently
+    # swallowed, and successful images are kept (rule 12).
+    from concurrent.futures import ThreadPoolExecutor
+
+    failures = []
+    results = []
+    with ThreadPoolExecutor(max_workers=min(a.count, BATCH_CONCURRENCY)) as pool:
+        futures = {pool.submit(_generate_once, a, api_key, i + 1): i + 1 for i in range(a.count)}
+        for fut in futures:
+            try:
+                results.append(fut.result())
+            except SystemExit as e:
+                failures.append(str(e))
+    ok = len(results)
+    print(f"[BATCH] {ok}/{a.count} generated, {len(failures)} failed", file=sys.stderr)
+    for msg in failures:
+        print(f"[BATCH-FAIL] {msg}", file=sys.stderr)
+    if failures:
+        sys.exit(1)
     return 0
 
 
@@ -300,10 +530,23 @@ if __name__ == "__main__":
         1824,
         1024,
     )
+    h, w, adj = snap_size(800, 600)
+    assert (h, w) == (800, 608) and adj, "600 snaps to 608 (16-multiple)"
+    assert snap_size(1024, 1024) == (1024, 1024, []), "aligned sizes pass through"
     assert resolve_size(SimpleNamespace(aspect=None, height=800, width=600)) == (
         800,
-        600,
+        608,
     )
+    body_guard = build_body(SimpleNamespace(
+        mode="t2i", instruction="x", input=None, base64=False, strict_prompt=True,
+        transparent="off", mask=None,
+    ), 1024, 1024)
+    assert body_guard["prompt"].startswith("[Important]"), "anti-rewrite guard"
+    body_tr = build_body(SimpleNamespace(
+        mode="t2i", instruction="x", input=None, base64=False, strict_prompt=False,
+        transparent="native", mask=None,
+    ), 1024, 1024)
+    assert body_tr["extra_body"]["background"] == "transparent"
     assert resolve_output(
         SimpleNamespace(mode="t2i", output_dir=None), 1024, 1024
     ).name.startswith("agnes_t2i_1024x1024_")

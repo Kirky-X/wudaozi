@@ -53,15 +53,16 @@ def resolve_image_size(a: argparse.Namespace) -> str | None:
     return a.image_size  # None 或用户自定义字符串（如 "1328x1328"）
 
 
-def resolve_output(a: argparse.Namespace) -> Path:
-    """输出路径：默认 $PWD/kolors-output/，文件名含 t2i+时间戳+uuid8 防覆盖。"""
+def resolve_output(a: argparse.Namespace, index: int = 1) -> Path:
+    """输出路径：默认 $PWD/kolors-output/，文件名含 t2i+时间戳+uuid8 防覆盖；count>1 时追加序号。"""
     out_dir = (
         Path(a.output_dir).resolve() if a.output_dir else Path.cwd() / "kolors-output"
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
     suffix = uuid.uuid4().hex[:8]
-    return out_dir / f"kolors_t2i_{ts}_{suffix}.png"
+    idx = f"_{index:02d}" if getattr(a, "count", 1) > 1 else ""
+    return out_dir / f"kolors_t2i_{ts}_{suffix}{idx}.png"
 
 
 def build_body(a: argparse.Namespace) -> dict:
@@ -187,7 +188,32 @@ def parse_args() -> argparse.Namespace:
         "--output-dir", "-o", default=None, help="输出目录（默认 $PWD/kolors-output/）"
     )
     p.add_argument("--dry-run", action="store_true", help="只打印 curl 不执行")
-    return p.parse_args()
+    p.add_argument(
+        "--count",
+        type=int,
+        default=1,
+        help="一次生成 N 张（1-8，并发 4；吸收自 gpt_image_playground 批量生成）",
+    )
+    a = p.parse_args()
+    if not 1 <= a.count <= 8:
+        p.error("--count 必须在 1-8 之间")
+    return a
+
+
+def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
+    """单轮生成（index 用于 count > 1 时的文件名序号），失败抛 SystemExit。"""
+    out_path = resolve_output(a, index)
+    body = build_body(a)
+    label = f"[{index}/{a.count}] " if a.count > 1 else ""
+    print(f"{label}[INFO] 输出={out_path}", file=sys.stderr)
+    print(f"{label}[CMD] {to_curl(body, api_key)}", file=sys.stderr)
+    resp = call_api(body, api_key)
+    save_image(resp, out_path)
+    print(
+        f"{label}[OK] 已生成: {out_path} ({out_path.stat().st_size // 1024} KB)",
+        file=sys.stderr,
+    )
+    return out_path
 
 
 def main() -> int:
@@ -200,23 +226,36 @@ def main() -> int:
             "  → export AIPING_API_KEY=QC-xxx 后重试，或改用 agnes/boogu provider"
         )
 
-    out_path = resolve_output(a)
     body = build_body(a)
 
-    print(f"[INFO] provider=aiping-Kolors mode={a.mode}", file=sys.stderr)
-    print(f"[INFO] 输出={out_path}", file=sys.stderr)
+    print(f"[INFO] provider=aiping-Kolors mode={a.mode} count={a.count}", file=sys.stderr)
     print(f"[CMD] {to_curl(body, api_key)}", file=sys.stderr)
 
     if a.dry_run:
         print("[DRY-RUN] 未执行（无 key / 调试时用）", file=sys.stderr)
         return 0
 
-    resp = call_api(body, api_key)
-    save_image(resp, out_path)
-    print(
-        f"[OK] 已生成: {out_path} ({out_path.stat().st_size // 1024} KB)",
-        file=sys.stderr,
-    )
+    if a.count == 1:
+        _generate_once(a, api_key, 1)
+        return 0
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    failures = []
+    ok = 0
+    with ThreadPoolExecutor(max_workers=min(a.count, 4)) as pool:
+        futures = {pool.submit(_generate_once, a, api_key, i + 1): i + 1 for i in range(a.count)}
+        for fut in futures:
+            try:
+                fut.result()
+                ok += 1
+            except SystemExit as e:
+                failures.append(str(e))
+    print(f"[BATCH] {ok}/{a.count} 已生成，{len(failures)} 失败", file=sys.stderr)
+    for msg in failures:
+        print(f"[BATCH-FAIL] {msg}", file=sys.stderr)
+    if failures:
+        sys.exit(1)
     return 0
 
 

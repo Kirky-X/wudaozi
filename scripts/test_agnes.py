@@ -34,9 +34,10 @@ class TestResolveSize:
         assert agnes.resolve_size(self._ns(aspect="9:16")) == (1824, 1024)
         assert agnes.resolve_size(self._ns(aspect="16:9")) == (1024, 1824)
 
-    def test_both_hw_custom(self):
-        # agnes 不做 16 对齐，原样返回
-        assert agnes.resolve_size(self._ns(height=800, width=600)) == (800, 600)
+    def test_both_hw_custom_snapped(self):
+        # 吸收 gpt_image_playground：自定义尺寸自动规整到 16 倍数
+        assert agnes.resolve_size(self._ns(height=800, width=600)) == (800, 608)
+        assert agnes.resolve_size(self._ns(height=1024, width=1024)) == (1024, 1024)
 
     def test_default_1_1(self):
         assert agnes.resolve_size(self._ns()) == (1024, 1024)
@@ -253,3 +254,133 @@ class TestAspectRatios:
         assert agnes.ASPECT_RATIOS["9:16"][0] > agnes.ASPECT_RATIOS["9:16"][1]
         assert agnes.ASPECT_RATIOS["16:9"][1] > agnes.ASPECT_RATIOS["16:9"][0]
         assert agnes.ASPECT_RATIOS["3:4"][0] > agnes.ASPECT_RATIOS["3:4"][1]
+
+
+# ---------- 吸收自 gpt_image_playground（2026-09-14） ----------
+class TestSnapSize:
+    def test_aligns_to_16_multiple(self):
+        assert agnes.snap_size(800, 600) == (800, 608, ["width 600 -> 608 (snapped to 16-multiple, range 256-2048)"])
+
+    def test_aligned_passes_through(self):
+        assert agnes.snap_size(1024, 1024) == (1024, 1024, [])
+
+    def test_clamps_to_bounds(self):
+        h, w, _ = agnes.snap_size(9999, 100)
+        assert h == 2048 and w == 256
+
+    def test_resolve_size_applies_snap(self):
+        ns = SimpleNamespace(aspect=None, height=800, width=600)
+        assert agnes.resolve_size(ns) == (800, 608)
+
+
+class TestStrictPrompt:
+    def test_guard_prefixed(self):
+        body = agnes.build_body(SimpleNamespace(
+            mode="t2i", instruction="cat", input=None, base64=False,
+            strict_prompt=True, transparent="off", mask=None,
+        ), 1024, 1024)
+        assert body["prompt"].startswith(agnes.PROMPT_GUARD)
+        assert body["prompt"].endswith("cat")
+
+    def test_guard_off_by_default(self):
+        body = agnes.build_body(SimpleNamespace(
+            mode="t2i", instruction="cat", input=None, base64=False,
+            strict_prompt=False, transparent="off", mask=None,
+        ), 1024, 1024)
+        assert body["prompt"] == "cat"
+
+
+class TestTransparentNative:
+    def test_background_param(self):
+        body = agnes.build_body(SimpleNamespace(
+            mode="t2i", instruction="x", input=None, base64=False,
+            strict_prompt=False, transparent="native", mask=None,
+        ), 1024, 1024)
+        assert body["extra_body"]["background"] == "transparent"
+
+    def test_off_has_no_background(self):
+        body = agnes.build_body(SimpleNamespace(
+            mode="t2i", instruction="x", input=None, base64=False,
+            strict_prompt=False, transparent="off", mask=None,
+        ), 1024, 1024)
+        assert "background" not in body["extra_body"]
+
+
+class TestMask:
+    def test_mask_requires_png(self, tmp_path):
+        mask = tmp_path / "m.jpg"
+        mask.write_bytes(b"fake-jpeg")
+        with pytest.raises(SystemExit):
+            agnes.build_body(SimpleNamespace(
+                mode="ti2i", instruction="x", input="https://e.com/a.png", base64=False,
+                strict_prompt=False, transparent="off", mask=str(mask),
+            ), 1024, 1024)
+
+    def test_mask_rejected_for_t2i(self, tmp_path):
+        mask = tmp_path / "m.png"
+        mask.write_bytes(b"\x89PNG")
+        with pytest.raises(SystemExit):
+            agnes.build_body(SimpleNamespace(
+                mode="t2i", instruction="x", input=None, base64=False,
+                strict_prompt=False, transparent="off", mask=str(mask),
+            ), 1024, 1024)
+
+    def test_mask_png_injected_as_data_uri(self, tmp_path):
+        import base64 as b64mod
+        mask = tmp_path / "m.png"
+        raw = b"\x89PNG real-bytes"
+        mask.write_bytes(raw)
+        body = agnes.build_body(SimpleNamespace(
+            mode="ti2i", instruction="x", input="https://e.com/a.png", base64=False,
+            strict_prompt=False, transparent="off", mask=str(mask),
+        ), 1024, 1024)
+        expected = "data:image/png;base64," + b64mod.b64encode(raw).decode()
+        assert body["extra_body"]["mask"] == expected
+
+    def test_mask_rejected_for_t2i_duplicate_guard(self, tmp_path):
+        pass
+
+
+class TestRemoveChroma:
+    def test_magenta_removed_with_pillow(self):
+        PIL = pytest.importorskip("PIL")
+        from PIL import Image
+        import io as _io
+        img = Image.new("RGBA", (4, 4), (255, 0, 255, 255))
+        img.putpixel((0, 0), (10, 20, 30, 255))  # 一个非洋红主体像素
+        buf = _io.BytesIO()
+        img.save(buf, "PNG")
+        p = Path("dummy.png")
+        p.write_bytes(buf.getvalue())
+        try:
+            agnes.remove_chroma(p, "magenta")
+            out = Image.open(p).convert("RGBA")
+            assert out.getpixel((0, 0))[3] == 255, "主体像素保留"
+            assert out.getpixel((3, 3))[3] == 0, "洋红背景转透明"
+        finally:
+            p.unlink(missing_ok=True)
+
+
+class TestSidecar:
+    def test_write_sidecar_json(self, tmp_path):
+        out = tmp_path / "a.png"
+        out.write_bytes(b"x")
+        sc = agnes.write_sidecar(out, {"provider": "agnes", "actual": {"bytes": 1}})
+        import json as _json
+        assert _json.loads(sc.read_text(encoding="utf-8"))["provider"] == "agnes"
+
+
+class TestCountValidation:
+    def test_batch_constants(self):
+        assert agnes.BATCH_MAX == 8
+        assert agnes.BATCH_CONCURRENCY == 4
+
+    def test_count_rejected_via_cli(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["agnes.py", "t2i", "-i", "x", "--count", "9"])
+        with pytest.raises(SystemExit):
+            agnes.parse_args()
+
+    def test_count_default_one(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["agnes.py", "t2i", "-i", "x"])
+        a = agnes.parse_args()
+        assert a.count == 1

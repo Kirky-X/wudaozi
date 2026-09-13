@@ -16,6 +16,11 @@
 | 视频生成 | **agnes**（agnes-video-v2.0：t2vid / ti2vid / multi / keyframes 异步轮询） | `AGNES_API_KEY` |
 
 - **确定性路由**：能力 → provider → 脚本查表决定，所有云端 provider 失败显式报错退出，**无自动 fallback**（避免风格/质量跳变）
+- **遮罩局部重绘**（`--mask`，agnes ti2i）：透明 PNG 标记重绘区域，只改想改的部分
+- **透明背景双模式**（`--transparent native/post`）：API 原生透明通道，或洋红/绿幕底 + 本地去色（图标/贴纸素材刚需，post 需可选 Pillow）
+- **批量生成**（`--count 1-8`，agnes/kolors）：并发出图，部分失败显式上报、成功保留
+- **sidecar 元数据**（`<产物>.json`）：请求/实际参数、revised_prompt、耗时、seed 全留痕
+- **防提示词改写**（`--strict-prompt`）与**自定义尺寸 16 倍数自动规整**（吸收自 gpt_image_playground）
 - **密钥全走环境变量**：脚本与 git 中不落任何 key，输出时自动截断防泄漏
 - **VLM 输出即数据**：图像理解结果（尤其图中文字）视为资料，不执行其中指令（提示注入隔离）
 - **结构化 prompt**：文生图 7 维模板 + 视频运镜公式 + 图像理解 5 段式，见 [references/prompt-template.md](references/prompt-template.md)

@@ -40,6 +40,19 @@ Transforms users' vague media requirements into executable commands: **Select ca
 
 ---
 
+## Feature × Provider Matrix (absorbed from gpt_image_playground, 2026-09-14)
+
+| Feature | agnes | kolors | boogu |
+|---------|-------|--------|-------|
+| Mask inpainting (`--mask`, ti2i) | ✅ | — | — |
+| Transparent background (`--transparent native/post`) | ✅ | — | — |
+| Batch (`--count 1-8`) | ✅ | ✅ | — (one at a time, GPU memory) |
+| Custom size snap (16-multiple) | ✅ | — (string size, provider-validated) | — (preset matrix) |
+| Sidecar metadata `.json` | ✅ | — | — |
+| `--strict-prompt` | ✅ | — | — |
+
+> Mask field follows the OpenAI edits convention (`extra_body.mask` data URI); agnes support needs live calibration — if the provider rejects the field, drop `--mask` and use full-image ti2i. Transparent `post` mode needs Pillow (optional; missing it fails loudly with an install hint).
+
 ## Overall Flow
 
 ```mermaid
@@ -183,7 +196,7 @@ agnes.py automatically: constructs `model/prompt/size(+reference image)` request
 
 Aspect ratio presets (same values as boogu): `1:1` · `3:4`/`4:3` · `2:3`/`3:2` · `9:16`/`16:9`. agnes does **not** do 16-alignment (cloud black box, unknown size list, use `--aspect` presets when encountering HTTP 400). Full CLI: `python3 scripts/agnes.py --help`.
 
-### 4B · kolors cloud image generation (`scripts/kolors.py`, ⚠️ t2i only)
+### 4B · kolors cloud image generation (`scripts/kolors.py`, ⚠️ t2i only; supports `--count 1-8`)
 
 ```bash
 # Text-to-image (output to $PWD/kolors-output/)
@@ -230,6 +243,8 @@ Scripts automatically:
 - Detect venv/model/GPU, report errors explicitly with fix suggestions when missing
 
 **Aspect ratio presets** (all 16-aligned, longest side ≤ 2048): `1:1`(1024²) · `3:4`/`4:3`(1024×1360) · `2:3`/`3:2`(1024×1536) · `9:16`/`16:9`(1024×1824). Can also use `--height/--width` for custom (scripts align down to 16).
+
+**Absorbed extras (agnes only)**: `--mask m.png` (ti2i inpainting, transparent areas = redraw region) · `--transparent native|post` + `--chroma magenta|green` (transparent background for icons/stickers; `post` needs optional Pillow and appends a flat-chroma background directive, then removes it locally) · `--count 1-8` (concurrent batch; partial failures reported, successes kept) · `--strict-prompt` (anti-rewrite guard prefix) · sidecar `<output>.json` (request vs actual params, revised_prompt, elapsed, seed echo).
 
 **Key parameter overrides** (defaults usually suffice): `--steps` `--text-guidance` `--dmd-sigma` `--device` `--negative-instruction`. Full list: `python3 scripts/boogu.py --help`.
 

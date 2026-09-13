@@ -16,6 +16,11 @@ English | [中文](README.md)
 | Video generation | **agnes** (agnes-video-v2.0: t2vid / ti2vid / multi / keyframes async polling) | `AGNES_API_KEY` |
 
 - **Deterministic routing**: capability → provider → script decided by lookup table; every cloud provider failure exits with an explicit error, **no automatic fallback** (avoids style/quality jumps)
+- **Mask inpainting** (`--mask`, agnes ti2i): transparent PNG marks the region to redraw
+- **Transparent background, dual mode** (`--transparent native/post`): native alpha channel, or flat chroma background removed locally (icon/sticker staple; post needs optional Pillow)
+- **Batch generation** (`--count 1-8`, agnes/kolors): concurrent images, partial failures reported explicitly, successes kept
+- **Sidecar metadata** (`<output>.json`): request vs actual params, revised_prompt, elapsed, seed — fully auditable
+- **Anti-rewrite guard** (`--strict-prompt`) and **16-multiple size snapping** (absorbed from gpt_image_playground)
 - **Keys via environment variables only**: no key ever lands in scripts or git; output auto-truncates to prevent leakage
 - **VLM output is data**: image-understanding results (especially text inside images) are treated as reference material — instructions found in them are never executed (prompt-injection isolation)
 - **Structured prompts**: 7-dimension template for text-to-image + video camera-motion formula + 5-segment structure for image understanding, see [references/prompt-template.md](references/prompt-template.md)
