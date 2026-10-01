@@ -164,7 +164,7 @@ def create_task(body: dict, api_key: str) -> tuple:
     r = _cc.post_json(CREATE_ENDPOINT, body, api_key, TIMEOUT, label="video")
     vid = r.get("video_id") or r.get("id") or r.get("task_id")
     if not vid:
-        sys.exit(f"[ERROR] 创建任务响应无 video_id/id/task_id: {r}")
+        _cc.fail("malformed_response", f"创建任务响应无 video_id/id/task_id: {r}")
     return vid, r
 
 
@@ -185,7 +185,9 @@ def poll_task(
                 resp = json.loads(r.read().decode("utf-8"))
         except urllib.error.HTTPError as e:
             if e.code == 404:
-                sys.exit(f"[ERROR] 任务不存在（404）: video_id={video_id}")
+                _cc.fail("no_task", f"任务不存在（404）: video_id={video_id}")
+            if e.code == 401:
+                _cc.fail("auth_error", f"轮询 HTTP 401: AGNES_API_KEY 失效")
             # 5xx/网络抖动重试，不致命
             print(f"[WARN] 轮询 HTTP {e.code}，{interval}s 后重试", file=sys.stderr)
             time.sleep(interval)
@@ -206,13 +208,14 @@ def poll_task(
             return resp
         if status == "failed":
             err = resp.get("error") or resp
-            sys.exit(f"[FAIL] 视频生成失败: {err}")
+            _cc.fail("generation_failed", f"视频生成失败: {err}")
         time.sleep(interval)
 
-    sys.exit(
-        f"[ERROR] 轮询超时（{max_wait}s），最后状态={last_status}。\n"
+    _cc.fail(
+        "timeout",
+        f"轮询超时（{max_wait}s），最后状态={last_status}。\n"
         f"  → video_id={video_id} 可稍后手动查询：\n"
-        f"    curl '{url}' -H 'Authorization: Bearer ***'"
+        f"    curl '{url}' -H 'Authorization: Bearer ***'",
     )
 
 
@@ -228,18 +231,18 @@ def download_video(url: str, out_path: Path) -> None:
         tmp.rename(out_path)
     except (urllib.error.URLError, TimeoutError) as e:
         tmp.unlink(missing_ok=True)
-        sys.exit(f"[ERROR] 下载视频失败: {e}")
+        _cc.fail("network_error", f"下载视频失败: {e}")
 
 
 def save_video(resp: dict, out_path: Path) -> None:
     """从 completed 响应取 url 下载。"""
     url = resp.get("url")
     if not url:
-        sys.exit(f"[ERROR] 任务 completed 但无 url: {resp}")
+        _cc.fail("malformed_response", f"任务 completed 但无 url: {resp}")
     download_video(url, out_path)
     if out_path.stat().st_size < 10 * 1024:
         out_path.unlink(missing_ok=True)
-        sys.exit("[FAIL] 视频文件 <10KB，疑似异常")
+        _cc.fail("abnormal_artifact", "视频文件 <10KB，疑似异常")
 
 
 def to_curl(body: dict, api_key: str) -> str:

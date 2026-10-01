@@ -115,14 +115,14 @@ def call_api(provider: str, body: dict, api_key: str) -> dict:
 
 
 def extract_content(resp: dict) -> str:
-    """从 chat/completions 响应提取 content。缺失即报错。"""
+    """从 chat/completions 响应提取 content。缺失即报错（结构异常 → malformed_response）。"""
     choices = resp.get("choices")
     if not choices:
-        sys.exit(f"[ERROR] 响应无 choices: {resp}")
+        _cc.fail("malformed_response", f"响应无 choices: {resp}")
     msg = choices[0].get("message", {}) or {}
     content = msg.get("content")
     if not content:
-        sys.exit(f"[ERROR] 响应无 content: {resp}")
+        _cc.fail("malformed_response", f"响应无 content: {resp}")
     return content
 
 

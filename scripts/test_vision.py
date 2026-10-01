@@ -184,12 +184,14 @@ class TestExtractContent:
         assert vision.extract_content(r) == "这是一只猫"
 
     def test_no_choices_exits(self):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as e:
             vision.extract_content({})
+        assert "code=malformed_response" in str(e.value)
 
     def test_no_content_exits(self):
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as e:
             vision.extract_content({"choices": [{"message": {}}]})
+        assert "code=malformed_response" in str(e.value)
 
 
 # ---------- to_curl ----------

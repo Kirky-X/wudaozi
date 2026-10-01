@@ -51,6 +51,41 @@ ERROR_HINTS = {
 }
 
 
+# 稳定错误码全集（调研建议#9：SKILL.md 声明消费者是 agent，错误必须机器可读）。
+# 错误首行统一 `[ERROR] code=<code> ...`，测试钉死全集防漂移（comfy 同款做法）。
+CODES = frozenset({
+    "auth_error",         # 401
+    "rate_limited",       # 429
+    "invalid_param",      # 400 / 参数不被接受
+    "no_task",            # 404（video 轮询任务不存在）
+    "empty_result",       # HTTP 200 但无产物（常为内容过滤）
+    "abnormal_artifact",  # 产物过小，疑似异常
+    "network_error",      # URLError / 下载失败
+    "timeout",            # 请求或轮询超时
+    "malformed_response", # 响应结构异常（缺字段/类型错/解码失败）
+    "server_error",       # 5xx
+    "generation_failed",  # 任务终态 failed（video）
+})
+
+
+def fail(code: str, msg: str, hint: str = "") -> None:
+    """统一错误出口：首行稳定错误码（agent 可解析），后续人读详情 + 可执行提示。"""
+    if code not in CODES:
+        raise ValueError(f"未知错误码 {code}，必须登记进 CODES（规则11：显性化）")
+    sys.exit(f"[ERROR] code={code} {msg}" + (f"\n{hint}" if hint else ""))
+
+
+def code_for_status(status: int) -> str:
+    """HTTP 状态 → 稳定错误码。"""
+    if status == 401:
+        return "auth_error"
+    if status == 429:
+        return "rate_limited"
+    if status >= 500:
+        return "server_error"
+    return "invalid_param"
+
+
 class CloudHTTPError(Exception):
     """带状态码与原始响应片段的 HTTP 错误。需要按状态分类决策的调用方
     （如 video.py 的重试）捕它；简单调用方走 post_json() 直接分流退出。"""
@@ -90,9 +125,9 @@ def post_json_raw(endpoint: str, body: dict, api_key: str, timeout: int) -> dict
 
 
 def exit_http_error(label: str, e: CloudHTTPError, hint_key: str | None = None) -> None:
-    """按 label + 状态码退出，附 (hint_key, status) 查到的可执行提示。"""
+    """按 label + 状态码退出（首行稳定错误码），附 (hint_key, status) 查到的可执行提示。"""
     hint = ERROR_HINTS.get((hint_key or label, e.status), "")
-    sys.exit(f"[ERROR] {label} HTTP {e.status}: {e.raw}\n{hint}".rstrip())
+    fail(code_for_status(e.status), f"{label} HTTP {e.status}: {e.raw}", hint)
 
 
 def post_json(
@@ -109,9 +144,9 @@ def post_json(
     except CloudHTTPError as e:
         exit_http_error(label, e, hint_key)
     except urllib.error.URLError as e:
-        sys.exit(f"[ERROR] {label} 网络不可达: {e.reason}\n  → 检查网络/代理/DNS")
+        fail("network_error", f"{label} 网络不可达: {e.reason}", "  → 检查网络/代理/DNS")
     except TimeoutError:
-        sys.exit(f"[ERROR] {label} {timeout}s 超时，重试或换 provider")
+        fail("timeout", f"{label} {timeout}s 超时，重试或换 provider")
 
 
 def download_to_file(url: str, out_path: Path, timeout: int, label: str) -> None:
@@ -121,7 +156,7 @@ def download_to_file(url: str, out_path: Path, timeout: int, label: str) -> None
             out_path.write_bytes(r.read())
     except (urllib.error.URLError, TimeoutError) as e:
         out_path.unlink(missing_ok=True)
-        sys.exit(f"[ERROR] 下载 {label} 返回 URL 失败: {e}")
+        fail("network_error", f"下载 {label} 返回 URL 失败: {e}")
 
 
 def extract_media(resp_data, out_path: Path, label: str, min_bytes: int, download=download_to_file) -> dict:
@@ -129,23 +164,38 @@ def extract_media(resp_data, out_path: Path, label: str, min_bytes: int, downloa
 
     返回 data[0] 供调用方构建 sidecar。download 参数保留注入点（各脚本保留可
     mock 的 _download 薄封装，tests/ 靠它断言下载行为）。
+    空 data 单独归因「可能被内容过滤」——国内 provider 审核严，HTTP 200 空结果
+    常见，盲目换 provider 无效（归因吸收自 fal-mcp-server image_handlers）。
     """
     if not isinstance(resp_data, dict) or not resp_data.get("data"):
-        sys.exit(f"[ERROR] {label} 响应无 data 字段: {resp_data}")
+        snippet = json.dumps(resp_data, ensure_ascii=False)[:300]
+        fail(
+            "empty_result",
+            f"{label} 响应无 data（空结果）: {snippet}",
+            "  → prompt 可能被内容过滤，改写敏感词/换措辞后重试；多次复现再换 provider",
+        )
     item = resp_data["data"][0]
     if not isinstance(item, dict):
-        sys.exit(f"[ERROR] {label} 响应 data[0] 不是对象: {item}")
+        fail("malformed_response", f"{label} 响应 data[0] 不是对象: {item}")
     if rp := item.get("revised_prompt"):
         print(f"[INFO] {label} revised_prompt: {rp}", file=sys.stderr)
-    if url := item.get("url"):
+    try:
+        url, b64 = item.get("url"), item.get("b64_json")
+    except AttributeError as e:
+        fail("malformed_response", f"{label} 响应 data[0] 结构异常: {e}")
+    if url:
         download(url, out_path)
-    elif b64 := item.get("b64_json"):
-        out_path.write_bytes(base64.b64decode(b64))
+    elif b64:
+        try:
+            out_path.write_bytes(base64.b64decode(b64))
+        except Exception as e:
+            fail("malformed_response", f"{label} b64_json 解码失败: {e}")
     else:
-        sys.exit(f"[ERROR] {label} 响应无 url/b64_json: {item}")
-    if out_path.stat().st_size < min_bytes:
+        fail("malformed_response", f"{label} 响应无 url/b64_json: {item}")
+    size = out_path.stat().st_size
+    if size < min_bytes:
         out_path.unlink(missing_ok=True)
-        sys.exit(f"[FAIL] {label} 返回图片 <{min_bytes}B，疑似异常")
+        fail("abnormal_artifact", f"{label} 返回图片 {size}B < {min_bytes}B，疑似异常")
     return item
 
 

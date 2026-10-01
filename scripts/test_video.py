@@ -391,6 +391,51 @@ class TestPollTask:
         assert r["status"] == "completed"
 
 
+# ---------- 轮询错误码（调研建议#9） ----------
+class TestPollTaskErrorCodes:
+    def test_failed_code_generation_failed(self, monkeypatch):
+        payload = json.dumps({"status": "failed", "error": "boom"}).encode()
+        monkeypatch.setattr(
+            video.urllib.request, "urlopen",
+            lambda req, timeout: _FakeResp(payload),
+        )
+        with pytest.raises(SystemExit) as e:
+            video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert "code=generation_failed" in str(e.value)
+
+    def test_404_code_no_task(self, monkeypatch):
+        def raise_404(req, timeout):
+            raise _http_error(404)
+
+        monkeypatch.setattr(video.urllib.request, "urlopen", raise_404)
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        with pytest.raises(SystemExit) as e:
+            video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert "code=no_task" in str(e.value)
+
+    def test_timeout_code(self, monkeypatch):
+        times = iter([0, 100_000])
+        monkeypatch.setattr(video.time, "time", lambda: next(times))
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        with pytest.raises(SystemExit) as e:
+            video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert "code=timeout" in str(e.value)
+
+    def test_save_video_malformed_code(self, tmp_path):
+        with pytest.raises(SystemExit) as e:
+            video.save_video({"status": "completed"}, tmp_path / "o.mp4")
+        assert "code=malformed_response" in str(e.value)
+
+    def test_save_video_undersized_code(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            video, "download_video",
+            lambda url, out_path: out_path.write_bytes(b"x" * 100),
+        )
+        with pytest.raises(SystemExit) as e:
+            video.save_video({"url": "http://mp4"}, tmp_path / "o.mp4")
+        assert "code=abnormal_artifact" in str(e.value)
+
+
 # ---------- save_video ----------
 class TestSaveVideo:
     def test_ok_downloads(self, tmp_path, monkeypatch):
