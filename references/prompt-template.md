@@ -263,6 +263,31 @@ Add by scenario:
 
 ---
 
+## JSON Structured Prompt Block (advanced · layout-precise needs)
+
+The 7-dimension formula is prose; when the requirement needs **precise layout / multi-region control** (posters, UI mockups, infographics), a JSON block is more controllable. All providers accept arbitrary instruction text — fill in the skeleton and pass the whole thing as `--instruction` (single-line or with line breaks, no script changes needed):
+
+```json
+{
+  "type": "poster",
+  "platform": "A2 print portrait",
+  "layout": {
+    "header": { "content": "event title, max two lines", "position": "top-center" },
+    "main":   { "content": "hero illustration of the subject", "position": "center", "size": "60% height" },
+    "footer": { "content": "date + venue line, QR placeholder bottom-left", "position": "bottom" }
+  },
+  "style": "minimal flat, brand color #1A73E8 with neutral grays, generous whitespace",
+  "constraints": ["no photographic faces", "no real contact info", "title must stay within two lines"],
+  "quality": "high detail, professional typography, clean vector look"
+}
+```
+
+Fill rules: `type/platform` 锚定用途与画幅 → `layout` 每个区域写清 content/position/size → `style` 一句话风格核（可带色板）→ `constraints` 列硬性禁令 → `quality` 收尾。**适用边界**：简单需求用 7 维公式更自然（JSON 是给版式类需求的，不是默认格式）。
+
+> **分工边界（垂直场景模板）**：本仓库不内嵌 UI 截图/信息图/海报等垂直模板库——已由姊妹 skill `gpt-image-2-style-library` 负责（模板类别→风格标签→场景标签的选型路由，含双语 Guidance 与上游出处锚点）。分工：**style-library 管"选哪个模板/风格"，wudaozi 管"生成执行"（provider 路由 + 脚本）**。未安装该 skill 的环境，用上面的 JSON 骨架自行描述版式即可，不要双头维护两套模板。
+
+---
+
 ## Checklist (Must review before generation)
 
 - [ ] Are all 7 dimensions complete? Which dimensions used defaults, and do they need user confirmation?

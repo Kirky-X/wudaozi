@@ -1,6 +1,6 @@
 ---
 name: wudaozi
-description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding, video generation. Triggers: text-to-image/image-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Image generation via agnes cloud/boogu local/kolors (text-to-image only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0. Routes by capability→provider, keys via environment variables. Do NOT trigger for: brand guideline boards / logo systems (→brandkit), Excalidraw charts & diagrams (→cangjie diagram), UI design reviews (→diting review pr / maliang critique)."
+description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding, video generation. Triggers: text-to-image/image-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Image generation via agnes cloud/boogu local/kolors (text-to-image only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0. Routes by capability→provider, keys via environment variables. Do NOT trigger for: brand guideline boards / logo systems (→brandkit), Excalidraw charts & diagrams (→cangjie diagram), UI design reviews (→diting review pr / maliang critique), vertical-scene template & style selection (→gpt-image-2-style-library)."
 license: MIT
 metadata:
   version: "0.3.0"
@@ -120,6 +120,8 @@ Determined in order by **reference image → speed → VRAM**: has reference ima
 Read [`references/prompt-template.md`](references/prompt-template.md), complete users' vague requirements by **7 dimensions**:
 
 1. Subject → 2. Action/Expression → 3. Background/Environment → 4. Composition/Perspective → 5. Lighting → 6. Style/Medium → 7. Quality
+
+> **Vertical scenes** (UI screenshot / infographic / poster / product template with established style systems): pick the template + style via `gpt-image-2-style-library` first (template & style selection skill), then return here for provider routing and execution. For layout-precise needs without it, use the JSON structured prompt block in `references/prompt-template.md` § JSON Structured Prompt Block.
 
 #### Vague requirements → Ask one question at a time for clarification
 
@@ -368,6 +370,7 @@ These three are **specialized subtasks of t2i**, using the same image generation
 - User wants **audio/3D model** generation (this skill only does 2D images + video).
 - User wants to **retouch/composite existing images** (PS-like operations, e.g., matting, color grading, compositing) → Use image processing tools, not generation models.
 - User wants **video editing** (trim/merge/add subtitles to existing video) → This skill only **generates** video, doesn't edit.
+- User wants **vertical-scene templates / style selection** (UI screenshot system, infographic engine, poster/product template library, style tags) → route to `gpt-image-2-style-library` (template & style selection). Division of labor: style-library picks *which template/style*, wudaozi executes *generation* (provider routing + scripts). Without that skill installed, use the JSON structured prompt block in `references/prompt-template.md` to describe layout yourself.
 - No local GPU and user unwilling/unable to run boogu on CUDA machine → boogu can only use `--dry-run`, **don't pretend to generate** (can use agnes/kolors cloud).
 
 ---
