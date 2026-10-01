@@ -12,6 +12,7 @@ import io
 import json
 import sys
 import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -153,7 +154,7 @@ class TestCallApi:
     def test_ok_returns_dict(self, monkeypatch):
         payload = json.dumps({"data": [{"url": "http://img"}]}).encode()
         monkeypatch.setattr(
-            agnes.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: _FakeResp(payload),
         )
@@ -163,7 +164,7 @@ class TestCallApi:
         def raise_401(req, timeout):
             raise _http_error(401)
 
-        monkeypatch.setattr(agnes.urllib.request, "urlopen", raise_401)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_401)
         with pytest.raises(SystemExit) as e:
             agnes.call_api({}, "k")
         assert "401" in str(e.value)
@@ -172,7 +173,7 @@ class TestCallApi:
         def raise_429(req, timeout):
             raise _http_error(429)
 
-        monkeypatch.setattr(agnes.urllib.request, "urlopen", raise_429)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_429)
         with pytest.raises(SystemExit) as e:
             agnes.call_api({}, "k")
         assert "429" in str(e.value)
@@ -181,7 +182,7 @@ class TestCallApi:
         def raise_url(req, timeout):
             raise urllib.error.URLError("dns fail")
 
-        monkeypatch.setattr(agnes.urllib.request, "urlopen", raise_url)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_url)
         with pytest.raises(SystemExit):
             agnes.call_api({}, "k")
 
@@ -189,7 +190,7 @@ class TestCallApi:
         def raise_to(req, timeout):
             raise TimeoutError()
 
-        monkeypatch.setattr(agnes.urllib.request, "urlopen", raise_to)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_to)
         with pytest.raises(SystemExit):
             agnes.call_api({}, "k")
 

@@ -16,18 +16,18 @@
     AIPING_API_KEY=QC-xxx python3 kolors.py t2i -i "..." --dry-run
 """
 # ponytail: 仅 t2i 是模型硬约束；CLI mode 强制 choices=["t2i"]，从入口拒绝图生图。
-# 与 agnes.py 解耦（provider 演化路径不同），自带 _download 小函数（同 agnes 惯例）。
+# provider 语义（端点/请求体/尺寸表）与 agnes.py 解耦，但 HTTP 传输骨架自 2026-10
+# 起收敛到 _cloud_common（显式推翻此前的解耦声明，作者批准，见 _cloud_common 模块注释）。
 
 import argparse
-import base64
 import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
 import uuid
 from pathlib import Path
+
+import _cloud_common as _cc
 
 ENDPOINT = "https://www.aiping.cn/api/v1/images/generations"
 MODEL = "Kolors"
@@ -75,62 +75,18 @@ def build_body(a: argparse.Namespace) -> dict:
 
 
 def _download(url: str, out_path: Path) -> None:
-    """下载 URL 到文件（Kolors 返回 siliconflow CDN 签名链接，urllib 自动跟随重定向）。"""
-    try:
-        with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
-            out_path.write_bytes(r.read())
-    except (urllib.error.URLError, TimeoutError) as e:
-        out_path.unlink(missing_ok=True)
-        sys.exit(f"[ERROR] 下载 Kolors 返回 URL 失败: {e}")
+    """下载 URL 到文件（共享传输；保留模块名供 tests mock）。Kolors 返回 siliconflow CDN 签名链接，urllib 自动跟随重定向。"""
+    _cc.download_to_file(url, out_path, TIMEOUT, "kolors")
 
 
 def call_api(body: dict, api_key: str) -> dict:
-    """POST 到 ENDPOINT。失败 sys.exit 并给可执行提示，不 fallback。"""
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        ENDPOINT,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raw = ""
-        try:
-            raw = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            raw = str(e.reason)
-        hint = {
-            401: "  → AIPING_API_KEY 失效，检查环境变量",
-            429: "  → 限流，稍后重试",
-            400: "  → prompt/image_size 不被接受，换 --aspect 或 --image-size",
-        }.get(e.code, "")
-        sys.exit(f"[ERROR] Kolors HTTP {e.code}: {raw}\n{hint}".rstrip())
-    except urllib.error.URLError as e:
-        sys.exit(f"[ERROR] Kolors 网络不可达: {e.reason}\n  → 检查网络/代理/DNS")
-    except TimeoutError:
-        sys.exit(f"[ERROR] Kolors {TIMEOUT}s 超时，重试或换 provider")
+    """POST 到 ENDPOINT（共享传输）。失败 sys.exit 并给可执行提示，不 fallback。"""
+    return _cc.post_json(ENDPOINT, body, api_key, TIMEOUT, label="kolors")
 
 
 def save_image(resp_data: dict, out_path: Path) -> None:
-    """响应处理：data[0].url → 下载；data[0].b64_json → 解码；缺失即报错。"""
-    if not resp_data.get("data"):
-        sys.exit(f"[ERROR] Kolors 响应无 data 字段: {resp_data}")
-    item = resp_data["data"][0]
-    if url := item.get("url"):
-        _download(url, out_path)
-    elif b64 := item.get("b64_json"):
-        out_path.write_bytes(base64.b64decode(b64))
-    else:
-        sys.exit(f"[ERROR] Kolors 响应无 url/b64_json: {item}")
-    if out_path.stat().st_size < 1024:
-        out_path.unlink(missing_ok=True)
-        sys.exit("[FAIL] Kolors 返回图片 <1KB，疑似异常")
+    """响应处理（共享 extract_media）：data[0].url → 下载；data[0].b64_json → 解码；缺失即报错。"""
+    _cc.extract_media(resp_data, out_path, label="kolors", min_bytes=1024, download=_download)
 
 
 def to_curl(body: dict, api_key: str) -> str:

@@ -27,10 +27,8 @@
 # num_frames 8n+1 是模型硬约束，入口校验拒绝，避免服务端 400。
 
 import argparse
-import ipaddress
 import json
 import os
-import socket
 import sys
 import time
 import urllib.error
@@ -38,6 +36,11 @@ import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
+
+import _cloud_common as _cc
+
+# SSRF 防护自 2026-10 上移 _cloud_common（vision.py 同享）；保留原名，调用点与 tests 不动
+from _cloud_common import assert_public_url as _assert_public_url  # noqa: F401
 
 CREATE_ENDPOINT = "https://apihub.agnes-ai.com/v1/videos"
 POLL_ENDPOINT = "https://apihub.agnes-ai.com/agnesapi"
@@ -113,43 +116,6 @@ def resolve_output(a: argparse.Namespace, width: int, height: int) -> Path:
     return out_dir / f"agnes_video_{a.mode}_{width}x{height}_{ts}_{suffix}.mp4"
 
 
-def _parse_host_ip(host: str):
-    """host → IPv4Address/IPv6Address 或 None（域名/无法解析）。
-
-    ipaddress.ip_address 只认标准点分十进制/IPv6，漏十进制(2852039166)/十六进制(0xA9FEA9FE)/
-    八进制 IP 这类 inet_aton 认的非标准写法（Linux 下 2852039166 → 169.254.169.254 云元数据）；
-    fallback 到 socket.inet_aton 补检测，挡 ipaddress 的盲区，避免 SSRF 非标准 IP 绕过。
-    解析失败视为公网域名放行（DNS rebinding 属服务端 fetch 责任，CLI 层不引入 DNS 查询）。
-    """
-    try:
-        return ipaddress.ip_address(host)
-    except ValueError:
-        pass
-    try:
-        # ponytail: inet_aton 接受十进制/十六进制/八进制 IP（ipaddress 盲区），转 packed 再用 ipaddress 校验属性
-        return ipaddress.ip_address(socket.inet_aton(host))
-    except (OSError, ValueError):
-        return None
-
-
-def _assert_public_url(u: str, ctx: str = "URL") -> None:
-    """校验公网 http(s) URL，拒绝内网/环回/链路本地/云元数据地址（防 SSRF）。"""
-    p = urllib.parse.urlparse(u)
-    if p.scheme not in ("http", "https"):
-        sys.exit(
-            f"[ERROR] {ctx} 只接受公网 http(s) URL（视频生成不支持 base64）：{u}\n"
-            "  → 先把本地图片上传到图床/OSS"
-        )
-    host = (p.hostname or "").lower()
-    if host == "localhost":
-        sys.exit(f"[ERROR] {ctx} 禁止 localhost（SSRF 防护）：{u}")
-    ip = _parse_host_ip(host)
-    if ip is None:
-        return  # 公网域名，放行
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-        sys.exit(f"[ERROR] {ctx} 禁止内网/环回/链路本地/保留地址（SSRF 防护）：{u}")
-
-
 def build_body(
     a: argparse.Namespace, width: int, height: int, num_frames: int, frame_rate: int
 ) -> dict:
@@ -194,37 +160,8 @@ def build_body(
 
 
 def create_task(body: dict, api_key: str) -> tuple:
-    """POST 创建任务。返回 (video_id, 原始响应)。失败 sys.exit。"""
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        CREATE_ENDPOINT,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            r = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raw = ""
-        try:
-            raw = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            raw = str(e.reason)
-        hint = {
-            401: "  → AGNES_API_KEY 失效",
-            429: "  → 限流，稍后重试",
-            400: "  → 参数不被接受，检查 num_frames(8n+1)/frame_rate(1-60)/分辨率",
-        }.get(e.code, "")
-        sys.exit(f"[ERROR] 创建视频任务 HTTP {e.code}: {raw}\n{hint}".rstrip())
-    except urllib.error.URLError as e:
-        sys.exit(f"[ERROR] 创建任务网络不可达: {e.reason}")
-    except TimeoutError:
-        sys.exit(f"[ERROR] 创建任务 {TIMEOUT}s 超时")
-
+    """POST 创建任务（共享传输）。返回 (video_id, 原始响应)。失败 sys.exit。"""
+    r = _cc.post_json(CREATE_ENDPOINT, body, api_key, TIMEOUT, label="video")
     vid = r.get("video_id") or r.get("id") or r.get("task_id")
     if not vid:
         sys.exit(f"[ERROR] 创建任务响应无 video_id/id/task_id: {r}")

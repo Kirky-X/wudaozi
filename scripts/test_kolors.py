@@ -13,6 +13,7 @@ import io
 import json
 import sys
 import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -115,7 +116,7 @@ class TestCallApi:
     def test_ok_returns_dict(self, monkeypatch):
         payload = json.dumps({"data": [{"url": "http://img"}]}).encode()
         monkeypatch.setattr(
-            kolors.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: _FakeResp(payload),
         )
@@ -123,7 +124,7 @@ class TestCallApi:
 
     def test_http_401_exits(self, monkeypatch):
         monkeypatch.setattr(
-            kolors.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: (_ for _ in ()).throw(_http_error(401)),
         )
@@ -133,7 +134,7 @@ class TestCallApi:
 
     def test_http_429_exits(self, monkeypatch):
         monkeypatch.setattr(
-            kolors.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: (_ for _ in ()).throw(_http_error(429)),
         )
@@ -143,7 +144,7 @@ class TestCallApi:
 
     def test_http_400_exits(self, monkeypatch):
         monkeypatch.setattr(
-            kolors.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: (_ for _ in ()).throw(_http_error(400)),
         )
@@ -155,7 +156,7 @@ class TestCallApi:
         def raise_url(req, timeout):
             raise urllib.error.URLError("dns fail")
 
-        monkeypatch.setattr(kolors.urllib.request, "urlopen", raise_url)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_url)
         with pytest.raises(SystemExit):
             kolors.call_api({}, "k")
 
@@ -163,7 +164,7 @@ class TestCallApi:
         def raise_to(req, timeout):
             raise TimeoutError()
 
-        monkeypatch.setattr(kolors.urllib.request, "urlopen", raise_to)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_to)
         with pytest.raises(SystemExit):
             kolors.call_api({}, "k")
 

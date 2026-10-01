@@ -21,10 +21,10 @@ import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
 import uuid
 from pathlib import Path
+
+import _cloud_common as _cc
 
 ENDPOINT = "https://apihub.agnes-ai.com/v1/images/generations"
 MODEL = "agnes-image-2.1-flash"
@@ -205,68 +205,23 @@ def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
 
 
 def call_api(body: dict, api_key: str) -> dict:
-    """POST to ENDPOINT. Exit on failure with actionable hints, no fallback."""
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        ENDPOINT,
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raw = ""
-        try:
-            raw = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            raw = str(e.reason)
-        hint = {
-            401: "  → AGNES_API_KEY expired, check environment variable",
-            429: "  → Rate limited, retry later or contact provider",
-            400: "  → size/prompt not accepted, try --aspect presets or simplify prompt",
-        }.get(e.code, "")
-        sys.exit(f"[ERROR] agnes HTTP {e.code}: {raw}\n{hint}".rstrip())
-    except urllib.error.URLError as e:
-        sys.exit(f"[ERROR] agnes network unreachable: {e.reason}\n  → Check network/proxy/DNS")
-    except TimeoutError:
-        sys.exit(f"[ERROR] agnes {TIMEOUT}s timeout, retry or switch provider")
+    """POST to ENDPOINT via the shared transport. Exit on failure with actionable
+    hints, no fallback (thin wrapper kept so tests/ and future callers have one name)."""
+    return _cc.post_json(ENDPOINT, body, api_key, TIMEOUT, label="agnes")
 
 
 def _download(url: str, out_path: Path) -> None:
-    """Download URL to file. urllib auto-follows redirects (agnes signed URLs redirect to OSS)."""
-    try:
-        with urllib.request.urlopen(url, timeout=TIMEOUT) as r:
-            out_path.write_bytes(r.read())
-    except (urllib.error.URLError, TimeoutError) as e:
-        out_path.unlink(missing_ok=True)
-        sys.exit(f"[ERROR] Failed to download agnes returned URL: {e}")
+    """Download URL to file (shared transport; kept as a module name for tests to patch)."""
+    _cc.download_to_file(url, out_path, TIMEOUT, "agnes")
 
 
 def save_image(resp_data: dict, out_path: Path) -> dict:
-    """Response handling: data[0].url → download; data[0].b64_json → decode; missing → error.
+    """Response handling via shared extract_media: data[0].url → download;
+    data[0].b64_json → decode; missing → error.
 
     Returns the data[0] item so callers can build sidecar metadata.
     """
-    if not resp_data.get("data"):
-        sys.exit(f"[ERROR] agnes response has no data field: {resp_data}")
-    item = resp_data["data"][0]
-    if rp := item.get("revised_prompt"):
-        print(f"[INFO] agnes revised_prompt: {rp}", file=sys.stderr)
-    if url := item.get("url"):
-        _download(url, out_path)
-    elif b64 := item.get("b64_json"):
-        out_path.write_bytes(base64.b64decode(b64))
-    else:
-        sys.exit(f"[ERROR] agnes response has no url/b64_json: {item}")
-    if out_path.stat().st_size < 1024:
-        out_path.unlink(missing_ok=True)
-        sys.exit("[FAIL] agnes returned image <1KB, likely abnormal")
-    return item
+    return _cc.extract_media(resp_data, out_path, label="agnes", min_bytes=1024, download=_download)
 
 
 def remove_chroma(png_path: Path, chroma: str, tolerance: int = 90) -> None:

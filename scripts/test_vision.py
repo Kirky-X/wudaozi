@@ -12,6 +12,7 @@ import io
 import json
 import sys
 import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -60,6 +61,35 @@ class TestResolveImageInput:
         assert uri.startswith("data:image/png;base64,")
 
 
+class TestResolveImageInputSSRF:
+    """SSRF 防护 —— vision 的 http(s) URL 由 VLM 服务端拉取,与 video.py 同源风险,
+    必须同样拒绝内网/环回/链路本地/云元数据地址(与 video.py 防护对齐)。"""
+
+    def test_localhost_exits(self):
+        with pytest.raises(SystemExit):
+            vision.resolve_image_input("http://localhost:8080/a.jpg")
+
+    def test_loopback_ip_exits(self):
+        with pytest.raises(SystemExit):
+            vision.resolve_image_input("http://127.0.0.1:9000/a.jpg")
+
+    def test_cloud_metadata_exits(self):
+        with pytest.raises(SystemExit):
+            vision.resolve_image_input("http://169.254.169.254/latest/meta-data/")
+
+    def test_private_10_exits(self):
+        with pytest.raises(SystemExit):
+            vision.resolve_image_input("http://10.0.0.5/a.jpg")
+
+    def test_decimal_ip_exits(self):
+        # 十进制 IP 2852039166 = 169.254.169.254(ipaddress 盲区,inet_aton 补检)
+        with pytest.raises(SystemExit):
+            vision.resolve_image_input("http://2852039166/a.jpg")
+
+    def test_public_domain_still_passes(self):
+        assert vision.resolve_image_input("https://example.com/a.jpg") == "https://example.com/a.jpg"
+
+
 # ---------- build_body ----------
 class TestBuildBody:
     def test_agnes_body(self):
@@ -103,7 +133,7 @@ class TestCallApi:
     def test_ok_returns_dict(self, monkeypatch):
         payload = json.dumps({"choices": [{"message": {"content": "ok"}}]}).encode()
         monkeypatch.setattr(
-            vision.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: _FakeResp(payload),
         )
@@ -112,7 +142,7 @@ class TestCallApi:
 
     def test_http_401_exits(self, monkeypatch):
         monkeypatch.setattr(
-            vision.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: (_ for _ in ()).throw(_http_error(401)),
         )
@@ -122,7 +152,7 @@ class TestCallApi:
 
     def test_http_400_exits(self, monkeypatch):
         monkeypatch.setattr(
-            vision.urllib.request,
+            urllib.request,
             "urlopen",
             lambda req, timeout: (_ for _ in ()).throw(_http_error(400)),
         )
@@ -134,7 +164,7 @@ class TestCallApi:
         def raise_url(req, timeout):
             raise urllib.error.URLError("dns fail")
 
-        monkeypatch.setattr(vision.urllib.request, "urlopen", raise_url)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_url)
         with pytest.raises(SystemExit):
             vision.call_api("agnes", {}, "k")
 
@@ -142,7 +172,7 @@ class TestCallApi:
         def raise_to(req, timeout):
             raise TimeoutError()
 
-        monkeypatch.setattr(vision.urllib.request, "urlopen", raise_to)
+        monkeypatch.setattr(urllib.request, "urlopen", raise_to)
         with pytest.raises(SystemExit):
             vision.call_api("aiping", {}, "k")
 

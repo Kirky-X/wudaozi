@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""wudaozi —— 云端 provider 共享传输骨架(纯 stdlib)。
+
+收敛 agnes.py / kolors.py / vision.py / video.py 四份重复的 HTTP 样板:
+- post_json / post_json_raw:带鉴权 JSON POST + 统一错误分流
+- download_to_file:URL → 本地文件(失败删半成品)
+- extract_media:生成类响应 → url/b64_json 落盘 + 产物 sanity 校验
+- assert_public_url / parse_host_ip:SSRF 防护(自 video.py 上移共享)
+- ERROR_HINTS:按 (hint_key, HTTP status) 查可执行提示
+
+2026-10 吸收自 luminarylane/fal-mcp-server 的 handlers/ 分层模式:provider
+脚本只留 build_body + 常量 + CLI,新增 provider 的边际成本 ≈ build_body + 常量。
+
+历史说明:kolors.py 与 agnes.py 曾自declare「与对方解耦、intentionally not
+imported to avoid cross-provider coupling」。本模块是对该决定的显式推翻
+(2026-10-02 作者批准:按调研建议全面优化):收敛的只有 HTTP 传输骨架,不含
+任何 provider 语义;provider 差异(端点/请求体/提示文案/自检)全部留在各自脚本。
+"""
+# ponytail: 本模块不做任何路由/重试决策,只做传输与落盘——决策归各脚本(规则5)。
+# 提示文案统一中文,与 kolors/vision/video 现状一致(agnes 原为英文,随收敛统一)。
+
+import base64
+import ipaddress
+import json
+import socket
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# (hint_key, HTTP status) → 可执行提示。hint_key 与消息里的 label 解耦:
+# vision.py 的 label 是 provider 名(agnes/aiping),用 <provider>-vlm 作 hint_key,
+# 避免与图像生成的同名 provider 提示冲突。
+ERROR_HINTS = {
+    ("agnes", 401): "  → AGNES_API_KEY 失效，检查环境变量，或改用 boogu 本地",
+    ("agnes", 429): "  → 限流，稍后重试，或改用 kolors（需 AIPING_API_KEY）",
+    ("agnes", 400): "  → size/prompt 不被接受，试 --aspect 预设或精简 prompt",
+    ("kolors", 401): "  → AIPING_API_KEY 失效，检查环境变量",
+    ("kolors", 429): "  → 限流，稍后重试",
+    ("kolors", 400): "  → prompt/image_size 不被接受，换 --aspect 或 --image-size",
+    ("video", 401): "  → AGNES_API_KEY 失效",
+    ("video", 429): "  → 限流，稍后重试",
+    ("video", 400): "  → 参数不被接受，检查 num_frames(8n+1)/frame_rate(1-60)/分辨率",
+    ("agnes-vlm", 401): "  → AGNES_API_KEY 失效，检查环境变量",
+    ("agnes-vlm", 429): "  → 限流，稍后重试",
+    ("agnes-vlm", 400): "  → 图片/question 格式不被接受，换图或精简 question",
+    ("aiping-vlm", 401): "  → AIPING_API_KEY 失效，检查环境变量",
+    ("aiping-vlm", 429): "  → 限流，稍后重试",
+    ("aiping-vlm", 400): "  → 图片/question 格式不被接受，换图或精简 question",
+}
+
+
+class CloudHTTPError(Exception):
+    """带状态码与原始响应片段的 HTTP 错误。需要按状态分类决策的调用方
+    （如 video.py 的重试）捕它；简单调用方走 post_json() 直接分流退出。"""
+
+    def __init__(self, status: int, raw: str):
+        super().__init__(f"HTTP {status}: {raw}")
+        self.status = status
+        self.raw = raw
+
+
+def read_error_body(e: urllib.error.HTTPError) -> str:
+    """读错误响应体前 500 字符；读不到退回 reason。"""
+    try:
+        return e.read().decode("utf-8", errors="replace")[:500]
+    except Exception:
+        return str(e.reason)
+
+
+def post_json_raw(endpoint: str, body: dict, api_key: str, timeout: int) -> dict:
+    """带鉴权 JSON POST。成功返回解析后的 dict；HTTPError → CloudHTTPError；
+    URLError/TimeoutError 原样上抛，由调用方分类（重试或退出）。"""
+    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raise CloudHTTPError(e.code, read_error_body(e)) from None
+
+
+def exit_http_error(label: str, e: CloudHTTPError, hint_key: str | None = None) -> None:
+    """按 label + 状态码退出，附 (hint_key, status) 查到的可执行提示。"""
+    hint = ERROR_HINTS.get((hint_key or label, e.status), "")
+    sys.exit(f"[ERROR] {label} HTTP {e.status}: {e.raw}\n{hint}".rstrip())
+
+
+def post_json(
+    endpoint: str,
+    body: dict,
+    api_key: str,
+    timeout: int,
+    label: str,
+    hint_key: str | None = None,
+) -> dict:
+    """post_json_raw + 统一错误出口（不重试、显式报错不 fallback）。agnes/kolors/vision 用。"""
+    try:
+        return post_json_raw(endpoint, body, api_key, timeout)
+    except CloudHTTPError as e:
+        exit_http_error(label, e, hint_key)
+    except urllib.error.URLError as e:
+        sys.exit(f"[ERROR] {label} 网络不可达: {e.reason}\n  → 检查网络/代理/DNS")
+    except TimeoutError:
+        sys.exit(f"[ERROR] {label} {timeout}s 超时，重试或换 provider")
+
+
+def download_to_file(url: str, out_path: Path, timeout: int, label: str) -> None:
+    """下载 URL 到文件；失败删半成品再退出。urllib 自动跟随重定向（签名 CDN 链接可用）。"""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            out_path.write_bytes(r.read())
+    except (urllib.error.URLError, TimeoutError) as e:
+        out_path.unlink(missing_ok=True)
+        sys.exit(f"[ERROR] 下载 {label} 返回 URL 失败: {e}")
+
+
+def extract_media(resp_data, out_path: Path, label: str, min_bytes: int, download=download_to_file) -> dict:
+    """生成类响应处理：data[0].url → 下载；data[0].b64_json → 解码；缺失即报错。
+
+    返回 data[0] 供调用方构建 sidecar。download 参数保留注入点（各脚本保留可
+    mock 的 _download 薄封装，tests/ 靠它断言下载行为）。
+    """
+    if not isinstance(resp_data, dict) or not resp_data.get("data"):
+        sys.exit(f"[ERROR] {label} 响应无 data 字段: {resp_data}")
+    item = resp_data["data"][0]
+    if not isinstance(item, dict):
+        sys.exit(f"[ERROR] {label} 响应 data[0] 不是对象: {item}")
+    if rp := item.get("revised_prompt"):
+        print(f"[INFO] {label} revised_prompt: {rp}", file=sys.stderr)
+    if url := item.get("url"):
+        download(url, out_path)
+    elif b64 := item.get("b64_json"):
+        out_path.write_bytes(base64.b64decode(b64))
+    else:
+        sys.exit(f"[ERROR] {label} 响应无 url/b64_json: {item}")
+    if out_path.stat().st_size < min_bytes:
+        out_path.unlink(missing_ok=True)
+        sys.exit(f"[FAIL] {label} 返回图片 <{min_bytes}B，疑似异常")
+    return item
+
+
+def parse_host_ip(host: str):
+    """host → IPv4Address/IPv6Address 或 None（域名/无法解析）。
+
+    ipaddress.ip_address 只认标准点分十进制/IPv6，漏十进制(2852039166)/十六进制(0xA9FEA9FE)/
+    八进制 IP 这类 inet_aton 认的非标准写法（Linux 下 2852039166 → 169.254.169.254 云元数据）；
+    fallback 到 socket.inet_aton 补检测，挡 ipaddress 的盲区，避免 SSRF 非标准 IP 绕过。
+    解析失败视为公网域名放行（DNS rebinding 属服务端 fetch 责任，CLI 层不引入 DNS 查询）。
+    """
+    try:
+        return ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    try:
+        # ponytail: inet_aton 接受十进制/十六进制/八进制 IP（ipaddress 盲区），转 packed 再用 ipaddress 校验属性
+        return ipaddress.ip_address(socket.inet_aton(host))
+    except (OSError, ValueError):
+        return None
+
+
+def assert_public_url(u: str, ctx: str = "URL") -> None:
+    """校验公网 http(s) URL，拒绝内网/环回/链路本地/云元数据地址（防 SSRF）。"""
+    p = urllib.parse.urlparse(u)
+    if p.scheme not in ("http", "https"):
+        sys.exit(
+            f"[ERROR] {ctx} 只接受公网 http(s) URL: {u}\n"
+            "  → 先把本地文件上传到图床/OSS"
+        )
+    host = (p.hostname or "").lower()
+    if host == "localhost":
+        sys.exit(f"[ERROR] {ctx} 禁止 localhost（SSRF 防护）: {u}")
+    ip = parse_host_ip(host)
+    if ip is None:
+        return  # 公网域名，放行
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+        sys.exit(f"[ERROR] {ctx} 禁止内网/环回/链路本地/保留地址（SSRF 防护）: {u}")

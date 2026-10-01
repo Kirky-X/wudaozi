@@ -24,9 +24,9 @@ import base64
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
+
+import _cloud_common as _cc
 
 TIMEOUT = 180  # VLM 推理比图像生成慢（复杂 OCR/解题可达 90s+），给足余量
 
@@ -79,8 +79,13 @@ def image_to_data_uri(path: str) -> str:
 
 
 def resolve_image_input(path: str) -> str:
-    """远程 http(s) URL 直接透传；本地路径转 data URI。"""
+    """远程 http(s) URL 直接透传；本地路径转 data URI。
+
+    URL 输入由 VLM 服务端拉取，与 video.py 同源 SSRF 风险——同样过公网校验
+    （拒绝内网/环回/链路本地/云元数据，2026-10 对齐 video.py 防护）。
+    """
     if path.startswith(("http://", "https://")):
+        _cc.assert_public_url(path, ctx="--image")
         return path
     return image_to_data_uri(path)
 
@@ -103,37 +108,10 @@ def build_body(provider: str, image_input: str, question: str, max_tokens: int) 
 
 
 def call_api(provider: str, body: dict, api_key: str) -> dict:
-    """POST 到 provider endpoint。失败 sys.exit 并给可执行提示。"""
+    """POST 到 provider endpoint（共享传输）。失败 sys.exit 并给可执行提示。"""
     cfg = PROVIDERS[provider]
-    data = json.dumps(body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(
-        cfg["endpoint"],
-        data=data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raw = ""
-        try:
-            raw = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            raw = str(e.reason)
-        hint = {
-            401: f"  → {cfg['key_env']} 失效，检查环境变量",
-            429: "  → 限流，稍后重试",
-            400: "  → 图片/question 格式不被接受，换图或精简 question",
-        }.get(e.code, "")
-        sys.exit(f"[ERROR] {provider} HTTP {e.code}: {raw}\n{hint}".rstrip())
-    except urllib.error.URLError as e:
-        sys.exit(f"[ERROR] {provider} 网络不可达: {e.reason}\n  → 检查网络/代理/DNS")
-    except TimeoutError:
-        sys.exit(f"[ERROR] {provider} {TIMEOUT}s 超时，重试或换 provider")
+    # label 用 provider 名（保持错误消息原样），hint_key 加 -vlm 后缀避免与图像生成同名 provider 的提示冲突
+    return _cc.post_json(cfg["endpoint"], body, api_key, TIMEOUT, label=provider, hint_key=f"{provider}-vlm")
 
 
 def extract_content(resp: dict) -> str:
