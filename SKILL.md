@@ -34,12 +34,17 @@ Transforms users' vague media requirements into executable commands: **Select ca
 | Deployment | Set `AGNES_API_KEY` and ready | Set `AIPING_API_KEY` and ready | Requires GPU + local models + venv |
 | Speed | Seconds per image | Seconds per image | base: minutes / turbo: seconds |
 | VRAM | No requirement | No requirement | 16GB+ (fp8 can reduce to ~8GB) |
+| Cost | Pricing not public, pay-per-use per image/video | Pricing not public, pay-per-use per image | Free (local compute/power only) |
 | Customization | size/prompt | size/prompt | turbo/fp8/seed/steps/cfg all available |
 | Privacy | prompt/image uploaded to cloud | prompt uploaded to cloud | Fully local, never leaves machine |
 | Failure handling | Explicit errors, no fallback | Explicit errors, no fallback | Explicit errors, no fallback |
 | Best for | No GPU / quick generation | No GPU / alternative when agnes is rate-limited | Has GPU / privacy-sensitive / batch tuning |
 
 **Default routing**: `AGNES_API_KEY` set → image generation via agnes, understanding via agnes, video via agnes; not set → ask user "configure key or use boogu locally". kolors serves as t2i alternative when agnes is rate-limited/unavailable, requires separate `AIPING_API_KEY` configuration.
+
+**Cost ordering** (verified 2026-10-02): agnes-ai.com / aiping.cn 定价页未公开可核实单价（403 / JS 渲染无数据）——按量计费，以 provider 账单为准，**不编造单价**（规则 26）。可靠排序仅一条：boogu 本地（只花算力）< 任一云端（每张图/每段视频都计费）。云端两家相对价格未核实，换 provider 的理由是**可用性/能力面**（如限流、ti2i 支持），不是猜测的价格差。
+
+> 🔴 **CHECKPOINT · 花费确认**: `--count > 1`（批量出图）与时长 ≥10s 的视频执行前，先向用户报预估**花费量级**再执行（"将生成 8 张图" / "将生成 18s 视频，生成失败也计费"）。定价未公开时不报具体金额，报量级即可；失败重试同样消耗额度（agnes 无幂等键，勿重复提交，见 video.py `--resume`）。
 
 > 🔴 **CHECKPOINT**: Local GPU blocked by OS (NVML blocked), boogu actual image generation must run on machine with CUDA (local can only use `--dry-run`). Without GPU, use agnes/kolors cloud for actual generation.
 
