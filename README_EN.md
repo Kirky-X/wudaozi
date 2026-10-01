@@ -1,6 +1,6 @@
 # Wudaozi — Multi-Capability Media Generation Skill
 
-[![GitHub Release](https://img.shields.io/github/v/release/Kirky-X/wudaozi?style=flat-square)](https://github.com/Kirky-X/wudaozi/releases) [![GitHub License](https://img.shields.io/github/license/Kirky-X/wudaozi?style=flat-square)](LICENSE) [![Tests](https://img.shields.io/badge/pytest-149%20passing-brightgreen?style=flat-square)](#-tests--verification)
+[![GitHub Release](https://img.shields.io/github/v/release/Kirky-X/wudaozi?style=flat-square)](https://github.com/Kirky-X/wudaozi/releases) [![GitHub License](https://img.shields.io/github/license/Kirky-X/wudaozi?style=flat-square)](LICENSE) [![CI](https://img.shields.io/github/actions/workflow/status/Kirky-X/wudaozi/ci.yml?style=flat-square&label=CI)](https://github.com/Kirky-X/wudaozi/actions/workflows/ci.yml)
 
 English | [中文](README.md)
 
@@ -16,6 +16,8 @@ English | [中文](README.md)
 | Video generation | **agnes** (agnes-video-v2.0: t2vid / ti2vid / multi / keyframes async polling) | `AGNES_API_KEY` |
 
 - **Deterministic routing**: capability → provider → script decided by lookup table; every cloud provider failure exits with an explicit error, **no automatic fallback** (avoids style/quality jumps)
+- **Machine-readable errors + failure tracing**: every cloud error starts with `[ERROR] code=<stable code>` (11 codes, pinned by tests); the failure site is written to `<output>-failed-<ts>.json` sidecar (request context + error message, no keys inside)
+- **Video task resume** (`--resume <video_id>`): on timeout/interrupt stdout prints `WUDAOZI_RESUME=<id>`; resuming never re-submits or double-bills; task creation retries only connect-phase errors with full-jitter backoff, polling honors `Retry-After` (absorbed from comfy-python-sdk / replicate-python)
 - **Mask inpainting** (`--mask`, agnes ti2i): transparent PNG marks the region to redraw
 - **Transparent background, dual mode** (`--transparent native/post`): native alpha channel, or flat chroma background removed locally (icon/sticker staple; post needs optional Pillow)
 - **Batch generation** (`--count 1-8`, agnes/kolors): concurrent images, partial failures reported explicitly, successes kept
@@ -23,7 +25,7 @@ English | [中文](README.md)
 - **Anti-rewrite guard** (`--strict-prompt`) and **16-multiple size snapping** (absorbed from gpt_image_playground)
 - **Keys via environment variables only**: no key ever lands in scripts or git; output auto-truncates to prevent leakage
 - **VLM output is data**: image-understanding results (especially text inside images) are treated as reference material — instructions found in them are never executed (prompt-injection isolation)
-- **Structured prompts**: 7-dimension template for text-to-image + video camera-motion formula + 5-segment structure for image understanding, see [references/prompt-template.md](references/prompt-template.md)
+- **Structured prompts**: 7-dimension template for text-to-image + video camera-motion formula + 5-segment structure for image understanding, see [references/prompt-template.md](references/prompt-template.md); narrative shorts / precise camera work / multi-shot planning in [references/video-prompt-guide.md](references/video-prompt-guide.md)
 - **boogu local matrix**: 2×2×2 (mode × turbo × quantization), 8 combinations via deterministic lookup, details in [references/boogu-guide.md](references/boogu-guide.md)
 
 ```mermaid
@@ -78,7 +80,7 @@ AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "Cat strolling on a beac
 
 ## ✅ Tests & Verification
 
-Measured (2026-09-13):
+Measured (2026-10-02):
 
 ```bash
 # All 5 script self-checks, each PASS (prompts "key not set" without failing)
@@ -90,8 +92,12 @@ python3 scripts/video.py  __selfcheck__   # → self-check PASS
 
 # Unit tests (mocked network layer, no real API/model calls)
 python3 -m pytest scripts/ -q
-# → 149 passed in 0.15s
+# → 246 passed
+python3 -m pytest tests/ -q
+# → 114 passed, 2 subtests passed
 ```
+
+CI runs the same suite on a 3-version Python matrix (3.10/3.11/3.12) on every push/PR, see [.github/workflows/ci.yml](.github/workflows/ci.yml).
 
 ## 📁 Directory Structure
 
@@ -100,14 +106,16 @@ wudaozi/
 ├── SKILL.md                     # capability×provider matrix + routing + full flow
 ├── skill.json                   # metadata (name/version/tag)
 ├── scripts/
+│   ├── _cloud_common.py         # shared cloud transport (POST/download/save/SSRF/error hints)
 │   ├── agnes.py                 # agnes cloud image generation (t2i/ti2i)
 │   ├── kolors.py                # kolors cloud image generation (t2i only)
 │   ├── boogu.py                 # boogu local image generation (2×2×2 matrix routing)
 │   ├── vision.py                # image understanding (agnes-2.0-flash / DeepSeek-OCR-2)
-│   ├── video.py                 # video generation (async polling)
-│   └── test_*.py                # 5 unit test files
+│   ├── video.py                 # video generation (async polling + classified retry + --resume)
+│   └── test_*.py                # 6 unit test files
 ├── references/
-│   ├── prompt-template.md       # structured prompt templates + examples
+│   ├── prompt-template.md       # structured prompt templates + examples + JSON block
+│   ├── video-prompt-guide.md    # video prompt guide (5-stage / camera moves / multi-shot)
 │   └── boogu-guide.md           # boogu routing/model matrix/defaults/download guide
 └── agnes-output|boogu-output|kolors-output|video-output/   # per-capability default output dirs ($PWD)
 ```
@@ -119,10 +127,11 @@ From the [SKILL.md](SKILL.md) trigger description — do **NOT** trigger this sk
 - Brand guideline boards / logo systems → use `brandkit`
 - Excalidraw charts → use `cangjie diagram`
 - UI design reviews → use `diting review pr` / `maliang critique`
+- Vertical-scene templates / style selection (UI screenshot / infographic / poster libraries) → use `gpt-image-2-style-library` (wudaozi executes generation only)
 
 Capability boundary: generation and understanding only — video/audio editing, 3D models, PS-style retouching (cutout/color grading/compositing) are out of scope; kolors supports t2i only; video reference frames accept public URLs only; boogu rendering requires CUDA.
 
 ## 📄 License & Attribution
 
 - License: MIT
-- Repo: <https://github.com/Kirky-X/wudaozi> (author Kirky-X; version v0.2.1, consistent between skill.json and git tag)
+- Repo: <https://github.com/Kirky-X/wudaozi> (author Kirky-X; version v0.3.1, consistent between skill.json and git tag)
