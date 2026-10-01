@@ -425,3 +425,44 @@ class TestFailedSidecarIntegration:
         monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: _FakeResp(payload))
         agnes._generate_once(self._ns(tmp_path), "k", 1)
         assert not list(tmp_path.glob("*-failed-*.json"))
+
+
+# ---------- 批量路径执行级测试（性能审查 F2） ----------
+class TestBatchMain:
+    def test_partial_failure_reports_and_exits_1(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agnes.py", "t2i", "-i", "x", "--count", "2", "--output-dir", str(tmp_path)],
+        )
+
+        def fake_once(a, api_key, index):
+            if index == 2:
+                raise SystemExit("[ERROR] code=auth_error batch-sim-401")
+            out = tmp_path / f"ok_{index}.png"
+            out.write_bytes(b"x" * 2048)
+            return out
+
+        monkeypatch.setattr(agnes, "_generate_once", fake_once)
+        with pytest.raises(SystemExit) as e:
+            agnes.main()
+        assert e.value.code == 1
+        err = capsys.readouterr().err
+        assert "[BATCH] 1/2" in err, "部分失败必须显式上报数量"
+        assert "batch-sim-401" in err
+
+    def test_all_success_exits_0(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agnes.py", "t2i", "-i", "x", "--count", "2", "--output-dir", str(tmp_path)],
+        )
+
+        def fake_once(a, api_key, index):
+            out = tmp_path / f"ok_{index}.png"
+            out.write_bytes(b"x" * 2048)
+            return out
+
+        monkeypatch.setattr(agnes, "_generate_once", fake_once)
+        assert agnes.main() == 0
+        assert "[BATCH] 2/2" in capsys.readouterr().err

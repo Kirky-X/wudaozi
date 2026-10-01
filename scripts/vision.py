@@ -20,8 +20,6 @@
 # 默认非 stream——非 stream 实测两 provider 都能拿完整 content；stream 是 UX 优化，YAGNI。
 
 import argparse
-import base64
-import json
 import os
 import sys
 from pathlib import Path
@@ -46,36 +44,9 @@ PROVIDERS = {
     },
 }
 
-# 图片支持的格式（base64 data URI）
-SUPPORTED_MIME = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-    "gif": "image/gif",
-}
-
-
 def image_to_data_uri(path: str) -> str:
-    """本地文件 → data:<mime>;base64,<...>。"""
-    p = Path(path)
-    if not p.exists():
-        sys.exit(f"[ERROR] 图片不存在: {path}")
-    # VLM 输入约束：>20MB 的图转 base64 会撑爆请求体（base64 膨胀 ~33%）
-    size = p.stat().st_size
-    if size > 20 * 1024 * 1024:
-        sys.exit(
-            f"[ERROR] 图片 {size // 1024 // 1024}MB > 20MB 上限\n"
-            "  → 先压缩或降分辨率，或改用公网 URL 输入"
-        )
-    ext = p.suffix.lower().lstrip(".")
-    mime = SUPPORTED_MIME.get(ext)
-    if not mime:
-        sys.exit(
-            f"[ERROR] 不支持的图片格式: .{ext}（支持 {'/'.join(SUPPORTED_MIME)}）"
-        )
-    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+    """本地文件 → data URI（共享实现，20MB 上限统一生效，架构审查 M-5）。"""
+    return _cc.image_to_data_uri(path)
 
 
 def resolve_image_input(path: str) -> str:
@@ -127,22 +98,8 @@ def extract_content(resp: dict) -> str:
 
 
 def to_curl(provider: str, body: dict, api_key: str) -> str:
-    """dry-run 等价 curl。key 截断防泄露，base64 图片截断防日志爆炸。"""
-    import copy
-
-    cfg = PROVIDERS[provider]
-    sample = copy.deepcopy(body)  # 深拷贝（不污染传给 call_api 的 body），比 json 往返省内存
-    for part in sample["messages"][0]["content"]:
-        if part.get("type") == "image_url":
-            url = part["image_url"]["url"]
-            if isinstance(url, str) and url.startswith("data:"):
-                part["image_url"]["url"] = url[:40] + "...(truncated)"
-    return (
-        f"curl -X POST {cfg['endpoint']} \\\n"
-        f"  -H 'Authorization: Bearer {api_key[:8]}***' \\\n"
-        f"  -H 'Content-Type: application/json' \\\n"
-        f"  -d '{json.dumps(sample, ensure_ascii=False)}'"
-    )
+    """dry-run 等价 curl（共享实现：key 掩码 + data URI 递归截断 + shlex.quote）。"""
+    return _cc.to_curl(PROVIDERS[provider]["endpoint"], body, api_key)
 
 
 # ============================================================================
@@ -200,9 +157,10 @@ def main() -> int:
 
     api_key = os.environ.get(cfg["key_env"])
     if not api_key:
-        sys.exit(
-            f"[ERROR] 未设置 {cfg['key_env']} 环境变量\n"
-            f"  → export {cfg['key_env']}=xxx 后重试，或换另一个 provider"
+        _cc.fail(
+            "auth_error",
+            f"未设置 {cfg['key_env']} 环境变量",
+            f"  → export {cfg['key_env']}=xxx 后重试，或换另一个 provider",
         )
 
     image_input = resolve_image_input(a.image)

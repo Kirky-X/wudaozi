@@ -16,7 +16,7 @@
 | 视频生成 | **agnes**（agnes-video-v2.0：t2vid / ti2vid / multi / keyframes 异步轮询） | `AGNES_API_KEY` |
 
 - **确定性路由**：能力 → provider → 脚本查表决定，所有云端 provider 失败显式报错退出，**无自动 fallback**（避免风格/质量跳变）
-- **机器可读错误 + 失败留痕**：错误首行一律 `[ERROR] code=<稳定错误码>`（11 个码，测试钉死），失败现场写 `<产物>-failed-<ts>.json` sidecar（请求上下文 + 错误消息，key 不落盘）
+- **机器可读错误 + 失败留痕**：云端传输/响应错误首行一律 `[ERROR] code=<稳定错误码>`（11 个码，测试钉死；本地参数校验为普通 `[ERROR]`），失败现场写 `<产物>-failed-<ts>.json` sidecar（请求上下文 + 脱敏后的错误消息，key 模式脱敏不落盘）
 - **视频任务恢复**（`--resume <video_id>`）：超时/中断后 stdout 输出 `WUDAOZI_RESUME=<id>`，续查不重复提交、不重复计费；创建任务仅对连接级错误退避重试，轮询感知 `Retry-After`（吸收自 comfy-python-sdk / replicate-python）
 - **遮罩局部重绘**（`--mask`，agnes ti2i）：透明 PNG 标记重绘区域，只改想改的部分
 - **透明背景双模式**（`--transparent native/post`）：API 原生透明通道，或洋红/绿幕底 + 本地去色（图标/贴纸素材刚需，post 需可选 Pillow）

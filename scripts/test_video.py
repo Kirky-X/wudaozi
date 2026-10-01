@@ -374,10 +374,10 @@ class TestPollTask:
         assert "boom" in str(e.value) or "failed" in str(e.value)
 
     def test_timeout_exits(self, monkeypatch):
-        # 第一次 time.time() 算出小 deadline(0+60=60)，
+        # 第一次 monotonic() 算出小 deadline(0+60=60)，
         # 第二次循环检查返回越界值(100_000>60) → 循环不进 → 立即 timeout
         times = iter([0, 100_000])
-        monkeypatch.setattr(video.time, "time", lambda: next(times))
+        monkeypatch.setattr(video.time, "monotonic", lambda: next(times))
         monkeypatch.setattr(video.time, "sleep", lambda s: None)
         with pytest.raises(SystemExit) as e:
             video.poll_task("vid", "k", interval=1, max_wait=60)
@@ -432,7 +432,7 @@ class TestPollTaskErrorCodes:
 
     def test_timeout_code(self, monkeypatch):
         times = iter([0, 100_000])
-        monkeypatch.setattr(video.time, "time", lambda: next(times))
+        monkeypatch.setattr(video.time, "monotonic", lambda: next(times))
         monkeypatch.setattr(video.time, "sleep", lambda s: None)
         with pytest.raises(SystemExit) as e:
             video.poll_task("vid", "k", interval=1, max_wait=60)
@@ -569,8 +569,7 @@ class TestResumeMode:
     def test_resume_timeout_emits_machine_readable_handle(self, monkeypatch, tmp_path, capsys):
         monkeypatch.setenv("AGNES_API_KEY", "agn-test")
         monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "vid_9"))
-        # time 是单例模块：video.time 即 _cc.time——文件名时间戳、轮询 deadline、
-        # 失败 sidecar 的 meta 与文件名时间戳都会消费。伪时钟末值重复，对多出的消费者鲁棒
+        # 轮询 deadline 用单调钟（审查 L-5）：只需两个值，伪时钟末值重复对多出的消费者鲁棒
         class _SeqTime:
             def __init__(self, *vals):
                 self._vals, self._i = list(vals), 0
@@ -580,7 +579,7 @@ class TestResumeMode:
                 self._i += 1
                 return v
 
-        monkeypatch.setattr(video.time, "time", _SeqTime(0, 0, 100_000, 0))
+        monkeypatch.setattr(video.time, "monotonic", _SeqTime(0, 100_000))
         monkeypatch.setattr(video.time, "sleep", lambda s: None)
         with pytest.raises(SystemExit) as e:
             video.main()
@@ -761,3 +760,43 @@ class TestTerminalConstant:
     def test_terminal_states(self):
         assert video.TERMINAL == {"completed", "failed"}
         assert "queued" in video.KNOWN_STATES and "in_progress" in video.KNOWN_STATES
+
+
+# ---------- 审查修复回归（性能 F1，架构 M-4） ----------
+class TestReviewFixes:
+    def test_retry_after_clamped_to_remaining_budget(self, monkeypatch):
+        # Retry-After: 3600 不得睡穿 max-wait=60（性能 F1：单次 sleep 无上界）
+        sleeps = []
+        responses = iter([
+            _http_error(429, headers={"Retry-After": "3600"}),
+        ])
+        def urlopen(req, timeout):
+            item = next(responses)
+            if isinstance(item, Exception):
+                raise item
+            return item
+        monkeypatch.setattr(video.urllib.request, "urlopen", urlopen)
+        monotonic = iter([0, 0, 0, 100_000])  # deadline → while 检查 → 钳制计算 → 循环检查
+        monkeypatch.setattr(video.time, "monotonic", lambda: next(monotonic))
+        monkeypatch.setattr(video.time, "sleep", lambda s: sleeps.append(s))
+        with pytest.raises(SystemExit) as e:
+            video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert sleeps == [60.0], "sleep 必须被钳制到剩余预算"
+        assert "code=timeout" in str(e.value)
+
+    def test_keyboard_interrupt_emits_resume_handle(self, monkeypatch, tmp_path, capsys):
+        # Ctrl-C 不是 SystemExit——中断也要拿到 WUDAOZI_RESUME + 留痕（架构 M-4）
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["video.py", "t2vid", "--resume", "vid_7", "--output-dir", str(tmp_path),
+             "--poll-interval", "1", "--max-wait", "60"],
+        )
+        def fake_poll(video_id, api_key, interval, max_wait):
+            raise KeyboardInterrupt()
+        monkeypatch.setattr(video, "poll_task", fake_poll)
+        with pytest.raises(KeyboardInterrupt):
+            video.main()
+        assert "WUDAOZI_RESUME=vid_7" in capsys.readouterr().out
+        scs = list(tmp_path.glob("*-failed-*.json"))
+        assert len(scs) == 1

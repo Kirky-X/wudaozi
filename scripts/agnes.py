@@ -16,7 +16,6 @@ Usage:
 # agnes is a cloud black box, doesn't support seed/steps/cfg, so CLI is minimal — don't expose meaningless knobs.
 
 import argparse
-import base64
 import json
 import os
 import sys
@@ -42,15 +41,6 @@ ASPECT_RATIOS = {
     "3:2": (1024, 1536),  # landscape
     "9:16": (1824, 1024),  # mobile portrait
     "16:9": (1024, 1824),  # landscape
-}
-
-# ti2i local reference image supported formats (agnes accepts Data URI)
-SUPPORTED_MIME = {
-    "png": "image/png",
-    "jpg": "image/jpeg",
-    "jpeg": "image/jpeg",
-    "webp": "image/webp",
-    "gif": "image/gif",
 }
 
 # ── Absorbed from CookSleep/gpt_image_playground (2026-09-14) ──
@@ -134,18 +124,8 @@ def resolve_output(a: argparse.Namespace, height: int, width: int, index: int = 
 
 
 def image_to_data_uri(path: str) -> str:
-    """Local file → data:<mime>;base64,<...>."""
-    p = Path(path)
-    if not p.exists():
-        sys.exit(f"[ERROR] Reference image does not exist: {path}")
-    ext = p.suffix.lower().lstrip(".")
-    mime = SUPPORTED_MIME.get(ext)
-    if not mime:
-        sys.exit(
-            f"[ERROR] Unsupported reference image format: .{ext} (supported: {'/'.join(SUPPORTED_MIME)})"
-        )
-    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
-    return f"data:{mime};base64,{b64}"
+    """Local file → data URI (shared impl; 20MB guard applies here too, M-5)."""
+    return _cc.image_to_data_uri(path)
 
 
 def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
@@ -188,12 +168,13 @@ def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
     if a.mode == "ti2i":
         if not a.input:
             sys.exit("[ERROR] Image-to-image (ti2i) requires --input reference image path or URL")
-        # Remote http(s) URL passthrough; local path converted to Data URI
-        ref = (
-            a.input
-            if a.input.startswith(("http://", "https://"))
-            else image_to_data_uri(a.input)
-        )
+        # Remote http(s) URL passthrough (SSRF-checked — the VLM/provider fetches it,
+        # same exposure as vision.py); local path converted to Data URI
+        if a.input.startswith(("http://", "https://")):
+            _cc.assert_public_url(a.input, ctx="--input")
+            ref = a.input
+        else:
+            ref = image_to_data_uri(a.input)
         extra["image"] = [ref]
         if getattr(a, "mask", None):
             mask_uri = image_to_data_uri(a.mask)
@@ -273,19 +254,8 @@ def write_sidecar(out_path: Path, meta: dict) -> Path:
 
 
 def to_curl(body: dict, api_key: str) -> str:
-    """dry-run equivalent curl command. Key truncated to prevent leakage, base64 reference image truncated to prevent log explosion."""
-    sample = json.loads(json.dumps(body))  # Deep copy to avoid mutation
-    extra = sample.get("extra_body", {})
-    if "image" in extra:
-        v = extra["image"][0]
-        if isinstance(v, str) and v.startswith("data:"):
-            extra["image"] = [v[:40] + "...(truncated)"]
-    return (
-        f"curl -X POST {ENDPOINT} \\\n"
-        f"  -H 'Authorization: Bearer {api_key[:8]}***' \\\n"
-        f"  -H 'Content-Type: application/json' \\\n"
-        f"  -d '{json.dumps(sample, ensure_ascii=False)}'"
-    )
+    """Dry-run equivalent curl (shared impl: masked key, truncated data URIs, shlex.quote)."""
+    return _cc.to_curl(ENDPOINT, body, api_key)
 
 
 # ============================================================================
@@ -437,9 +407,10 @@ def main() -> int:
 
     api_key = os.environ.get("AGNES_API_KEY")
     if not api_key:
-        sys.exit(
-            "[ERROR] AGNES_API_KEY environment variable not set\n"
-            "  → export AGNES_API_KEY=agn-xxx and retry, or switch to boogu local provider"
+        _cc.fail(
+            "auth_error",
+            "AGNES_API_KEY environment variable not set",
+            "  → export AGNES_API_KEY=agn-xxx and retry, or switch to boogu local provider",
         )
 
     height, width = resolve_size(a)

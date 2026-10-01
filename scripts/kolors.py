@@ -20,7 +20,6 @@
 # 起收敛到 _cloud_common（显式推翻此前的解耦声明，作者批准，见 _cloud_common 模块注释）。
 
 import argparse
-import json
 import os
 import sys
 import time
@@ -32,6 +31,8 @@ import _cloud_common as _cc
 ENDPOINT = "https://www.aiping.cn/api/v1/images/generations"
 MODEL = "Kolors"
 TIMEOUT = 90  # ponytail: Kolors 单图通常 5-15s，给 90s 余量
+
+BATCH_CONCURRENCY = 4  # --count 并发上限（与 agnes 同值，具名常量防漂移，性能审查 F6）
 
 # Kolors 经 siliconflow 路由，常见 image_size；不传时服务端给默认 1024x1024。
 # ponytail: 清单未必全（云端黑盒），HTTP 400 时换 --image-size，不强校验。
@@ -90,13 +91,8 @@ def save_image(resp_data: dict, out_path: Path) -> None:
 
 
 def to_curl(body: dict, api_key: str) -> str:
-    """dry-run 等价 curl 命令。key 截断防泄露。"""
-    return (
-        f"curl -X POST {ENDPOINT} \\\n"
-        f"  -H 'Authorization: Bearer {api_key[:8]}***' \\\n"
-        f"  -H 'Content-Type: application/json' \\\n"
-        f"  -d '{json.dumps(body, ensure_ascii=False)}'"
-    )
+    """dry-run 等价 curl 命令（共享实现：key 掩码 + shlex.quote）。"""
+    return _cc.to_curl(ENDPOINT, body, api_key)
 
 
 # ============================================================================
@@ -185,9 +181,10 @@ def main() -> int:
 
     api_key = os.environ.get("AIPING_API_KEY")
     if not api_key:
-        sys.exit(
-            "[ERROR] 未设置 AIPING_API_KEY 环境变量\n"
-            "  → export AIPING_API_KEY=QC-xxx 后重试，或改用 agnes/boogu provider"
+        _cc.fail(
+            "auth_error",
+            "未设置 AIPING_API_KEY 环境变量",
+            "  → export AIPING_API_KEY=QC-xxx 后重试，或改用 agnes/boogu provider",
         )
 
     body = build_body(a)
@@ -207,7 +204,7 @@ def main() -> int:
 
     failures = []
     ok = 0
-    with ThreadPoolExecutor(max_workers=min(a.count, 4)) as pool:
+    with ThreadPoolExecutor(max_workers=min(a.count, BATCH_CONCURRENCY)) as pool:
         futures = {pool.submit(_generate_once, a, api_key, i + 1): i + 1 for i in range(a.count)}
         for fut in futures:
             try:

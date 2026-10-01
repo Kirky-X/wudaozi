@@ -326,7 +326,7 @@ Full default-value table: [`references/boogu-guide.md`](references/boogu-guide.m
 
 ## Failure Modes and Fallback
 
-> All cloud providers (agnes/kolors/vision/video) report errors explicitly and exit without automatic fallback on failure; user decides to retry or switch provider. Every cloud error's first line is machine-readable: `[ERROR] code=<code> ...` with a stable code (`auth_error` / `rate_limited` / `invalid_param` / `no_task` / `empty_result` / `abnormal_artifact` / `network_error` / `timeout` / `malformed_response` / `server_error` / `generation_failed`), and the failure site is written to `<output>-failed-<ts>.json` for post-mortem. `empty_result` usually means the prompt was content-filtered — rewrite the prompt instead of switching provider. Below table covers boogu local failure fixes.
+> All cloud providers (agnes/kolors/vision/video) report errors explicitly and exit without automatic fallback on failure; user decides to retry or switch provider. Every cloud transport/response error's first line is machine-readable: `[ERROR] code=<code> ...` with a stable code (`auth_error` / `rate_limited` / `invalid_param` / `no_task` / `empty_result` / `abnormal_artifact` / `network_error` / `timeout` / `malformed_response` / `server_error` / `generation_failed`). For agnes/kolors/video (products with output files) the failure site is also written to `<output>-failed-<ts>.json` for post-mortem; vision errors carry the stable code but no sidecar (no output file product). `empty_result` usually means the prompt was content-filtered — rewrite the prompt instead of switching provider. Below table covers boogu local failure fixes.
 
 | Trigger | First-line fix | Fallback |
 |---------|----------------|----------|

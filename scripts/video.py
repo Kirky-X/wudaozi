@@ -236,12 +236,12 @@ def poll_task(
     - 连续 3 次未知状态 → 打印原始响应告警（provider 可能改了状态枚举）
     """
     url = f"{POLL_ENDPOINT}?video_id={urllib.parse.quote(video_id)}"
-    deadline = time.time() + max_wait
+    deadline = time.monotonic() + max_wait  # 相对时长用单调钟，免受 NTP 步进扭曲（审查 L-5/F4）
     last_status = None
     last_progress = None
     unknown_streak = 0
     attempt = 0
-    while time.time() < deadline:
+    while time.monotonic() < deadline:
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {api_key}"}
         )
@@ -252,12 +252,20 @@ def poll_task(
             if e.code == 404:
                 _cc.fail("no_task", f"任务不存在（404）: video_id={video_id}")
             if e.code < 500 and e.code != 429:
-                code = "auth_error" if e.code == 401 else "invalid_param"
-                _cc.fail(code, f"轮询 HTTP {e.code}，重试无意义: video_id={video_id}")
+                _cc.fail(
+                    _cc.code_for_status(e.code),
+                    f"轮询 HTTP {e.code}，重试无意义: video_id={video_id}",
+                )
             headers = e.headers or {}
             delay = _cc.parse_retry_after(headers.get("Retry-After"))
-            source = f"遵循 Retry-After" if delay else "退避抖动"
+            source = "遵循 Retry-After" if delay else "退避抖动"
             delay = delay if delay else _full_jitter(attempt)
+            # 钳制到剩余预算：provider 的超大 Retry-After 不能单方面废除 --max-wait 语义
+            #（性能审查 F1：Retry-After: 3600 曾可一觉睡穿 20 分钟承诺）
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            delay = min(delay, remaining)
             print(f"[WARN] 轮询 HTTP {e.code}（{source}），{delay:.1f}s 后重试", file=sys.stderr)
             time.sleep(delay)
             attempt += 1
@@ -302,18 +310,8 @@ def poll_task(
 
 
 def download_video(url: str, out_path: Path) -> None:
-    """流式下载 mp4 到 tmp 文件再 rename，避免大文件内存峰值 + 半成品残留。"""
-    import shutil
-    tmp = out_path.with_suffix(out_path.suffix + ".part")
-    try:
-        with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT) as r, open(
-            tmp, "wb"
-        ) as f:
-            shutil.copyfileobj(r, f, length=64 * 1024)
-        tmp.rename(out_path)
-    except (urllib.error.URLError, TimeoutError) as e:
-        tmp.unlink(missing_ok=True)
-        _cc.fail("network_error", f"下载视频失败: {e}")
+    """下载 mp4（共享实现：流式 .part 原子落盘 + 下载 URL SSRF 校验）。"""
+    _cc.download_to_file(url, out_path, DOWNLOAD_TIMEOUT, "video")
 
 
 def save_video(resp: dict, out_path: Path) -> None:
@@ -328,13 +326,8 @@ def save_video(resp: dict, out_path: Path) -> None:
 
 
 def to_curl(body: dict, api_key: str) -> str:
-    """dry-run 等价 curl（创建任务）。key 截断。"""
-    return (
-        f"curl -X POST {CREATE_ENDPOINT} \\\n"
-        f"  -H 'Authorization: Bearer {api_key[:8]}***' \\\n"
-        f"  -H 'Content-Type: application/json' \\\n"
-        f"  -d '{json.dumps(body, ensure_ascii=False)}'"
-    )
+    """dry-run 等价 curl（创建任务，共享实现：key 掩码 + shlex.quote）。"""
+    return _cc.to_curl(CREATE_ENDPOINT, body, api_key)
 
 
 # ============================================================================
@@ -448,9 +441,10 @@ def main() -> int:
 
     api_key = os.environ.get("AGNES_API_KEY")
     if not api_key:
-        sys.exit(
-            "[ERROR] 未设置 AGNES_API_KEY 环境变量\n"
-            "  → export AGNES_API_KEY=agn-xxx 后重试"
+        _cc.fail(
+            "auth_error",
+            "未设置 AGNES_API_KEY 环境变量",
+            "  → export AGNES_API_KEY=agn-xxx 后重试",
         )
 
     if a.resume:
@@ -488,6 +482,18 @@ def main() -> int:
         # 失败留痕 + 机器可读恢复句柄：stdout 单行 WUDAOZI_RESUME=<id> 供调用方解析
         #（video 日志全走 stderr，stdout 只这一行，互不污染）（调研建议#3）
         _cc.raise_with_trace(e, out_path, "agnes-video", {"video_id": video_id, "mode": a.mode}, resume=video_id)
+    except KeyboardInterrupt:
+        # Ctrl-C 不是 SystemExit（会穿透过 except SystemExit），而中断恰是最需要
+        # 恢复句柄的场景（架构审查 M-4）：留痕 + stdout 句柄后原样重抛
+        if video_id is not None:
+            print(f"WUDAOZI_RESUME={video_id}", flush=True)
+        sc = _cc.write_failed_sidecar(
+            out_path,
+            _cc.failed_sidecar_meta(out_path, "agnes-video", "interrupted by user (SIGINT)", {"video_id": video_id, "mode": a.mode}),
+        )
+        notes = f"，续查: --resume {video_id}" if video_id is not None else ""
+        print(f"[ERROR] 用户中断{notes}" + (f"；失败详情已留痕: {sc}" if sc else ""), file=sys.stderr)
+        raise
     print(
         f"[OK] 已生成: {out_path} ({out_path.stat().st_size // (1024*1024)} MB)",
         file=sys.stderr,

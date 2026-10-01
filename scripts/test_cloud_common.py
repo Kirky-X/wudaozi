@@ -24,8 +24,10 @@ class _FakeResp:
     def __init__(self, payload: bytes):
         self._p = payload
 
-    def read(self):
-        return self._p
+    def read(self, length=-1):
+        # download_to_file 已改流式（copyfileobj）：一次性返回后清空，读到空即停
+        data, self._p = self._p, b""
+        return data
 
     def __enter__(self):
         return self
@@ -130,16 +132,23 @@ class TestDownloadToFile:
         cc.download_to_file("http://img/x", out, 30, "agnes")
         assert out.read_bytes() == b"image-bytes"
 
-    def test_failure_removes_partial_and_exits(self, tmp_path, monkeypatch):
+    def test_failure_removes_part_file_and_exits(self, tmp_path, monkeypatch):
+        # 流式 + .part 原子落盘：失败只删 .part，不动旧产物（rename 前产物不可见）
         def raise_url(url, timeout):
             raise urllib.error.URLError("reset")
 
         monkeypatch.setattr(urllib.request, "urlopen", raise_url)
         out = tmp_path / "o.png"
-        out.write_bytes(b"partial")  # 模拟上次残留
         with pytest.raises(SystemExit):
             cc.download_to_file("http://img/x", out, 30, "agnes")
-        assert not out.exists()
+        assert not out.exists() and not list(tmp_path.glob("*.part"))
+
+    def test_success_renames_part_atomically(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(urllib.request, "urlopen", lambda url, timeout: _FakeResp(b"full-bytes"))
+        out = tmp_path / "o.png"
+        cc.download_to_file("http://img/x", out, 30, "agnes")
+        assert out.read_bytes() == b"full-bytes"
+        assert not list(tmp_path.glob("*.part"))
 
 
 # ---------- extract_media ----------
@@ -399,3 +408,53 @@ class TestParseRetryAfter:
         from email.utils import formatdate
         past = formatdate(_t.time() - 60, usegmt=True)
         assert cc.parse_retry_after(past) is None
+
+
+# ---------- 审查修复回归（安全 M-1/M-2/L-1，架构 M-5） ----------
+class TestReviewFixes:
+    def test_cgnat_rejected(self):
+        # CGNAT 100.64.0.0/10 不归 ipaddress private，须显式拒绝（安全 L-1）
+        with pytest.raises(SystemExit):
+            cc.assert_public_url("http://100.64.0.1/x")
+
+    def test_failed_sidecar_masks_key_shaped_strings(self, tmp_path):
+        # 网关可能在 4xx 错误体回显 Authorization 值——落盘前必须脱敏（安全 M-1）
+        meta = cc.failed_sidecar_meta(
+            tmp_path / "a.png", "agnes",
+            'HTTP 401: {"message":"invalid key agn-SUPERSECRET123"}',
+            {"instruction": "use QC-anotherkey999 please"},
+        )
+        assert "agn-SUPERSECRET123" not in meta["error"]
+        assert "agn-SUPE***" in meta["error"]
+        assert "QC-anoth***" in meta["instruction"]
+        sc = cc.write_failed_sidecar(tmp_path / "a.png", meta)
+        assert "agn-SUPERSECRET123" not in sc.read_text(encoding="utf-8")
+
+    def test_download_rejects_non_public_urls(self, tmp_path):
+        # 下载 URL 来自 provider 响应——被入侵的 provider 不能诱导 CLI 读本地文件（安全 M-2）
+        out = tmp_path / "o.png"
+        with pytest.raises(SystemExit):
+            cc.download_to_file("file:///etc/hostname", out, 30, "agnes")
+        with pytest.raises(SystemExit):
+            cc.download_to_file("http://169.254.169.254/latest/meta-data/", out, 30, "agnes")
+        assert not out.exists() and not list(tmp_path.glob("*.part"))
+
+    def test_image_to_data_uri_oversize_exits(self, tmp_path):
+        import os as _os
+        p = tmp_path / "big.png"
+        p.write_bytes(b"\x89PNG" + b"0" * 100)
+        with pytest.raises(SystemExit) as e:
+            cc.image_to_data_uri(str(p), max_bytes=10)
+        assert "code=invalid_param" in str(e.value)
+        assert _os.path.exists(p), "超限图不得被删除"
+
+    def test_to_curl_quotes_single_quotes(self):
+        # prompt 含单引号时不得产生可被复制执行的注入命令（安全 M-3）
+        body = {"prompt": "cat'; touch PWNED; echo '"}
+        s = cc.to_curl("https://x", body, "agn-secret12345")
+        assert "; touch PWNED;" not in s.replace("\'", "") or s.count("'") >= 2
+        import shlex as _sh
+        # shlex 反解 -d 参数应还原出原始 JSON
+        import re as _re
+        m = _re.search(r"-d (.+)$", s, _re.S)
+        assert m and "'cat'" not in m.group(1)[1:-1]  # 不再裸拼单引号包裹

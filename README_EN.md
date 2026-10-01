@@ -16,7 +16,7 @@ English | [中文](README.md)
 | Video generation | **agnes** (agnes-video-v2.0: t2vid / ti2vid / multi / keyframes async polling) | `AGNES_API_KEY` |
 
 - **Deterministic routing**: capability → provider → script decided by lookup table; every cloud provider failure exits with an explicit error, **no automatic fallback** (avoids style/quality jumps)
-- **Machine-readable errors + failure tracing**: every cloud error starts with `[ERROR] code=<stable code>` (11 codes, pinned by tests); the failure site is written to `<output>-failed-<ts>.json` sidecar (request context + error message, no keys inside)
+- **Machine-readable errors + failure tracing**: every cloud transport/response error starts with `[ERROR] code=<stable code>` (11 codes, pinned by tests; local argument validation uses plain `[ERROR]`); the failure site is written to `<output>-failed-<ts>.json` sidecar (request context + secret-masked error message)
 - **Video task resume** (`--resume <video_id>`): on timeout/interrupt stdout prints `WUDAOZI_RESUME=<id>`; resuming never re-submits or double-bills; task creation retries only connect-phase errors with full-jitter backoff, polling honors `Retry-After` (absorbed from comfy-python-sdk / replicate-python)
 - **Mask inpainting** (`--mask`, agnes ti2i): transparent PNG marks the region to redraw
 - **Transparent background, dual mode** (`--transparent native/post`): native alpha channel, or flat chroma background removed locally (icon/sticker staple; post needs optional Pillow)

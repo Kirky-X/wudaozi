@@ -1,27 +1,33 @@
 #!/usr/bin/env python3
-"""wudaozi —— 云端 provider 共享传输骨架(纯 stdlib)。
+"""wudaozi —— 云端 provider 共享骨架(纯 stdlib)。
 
-收敛 agnes.py / kolors.py / vision.py / video.py 四份重复的 HTTP 样板:
+收敛 agnes.py / kolors.py / vision.py / video.py 四份重复的样板:
 - post_json / post_json_raw:带鉴权 JSON POST + 统一错误分流
-- download_to_file:URL → 本地文件(失败删半成品)
+- download_to_file:URL → 本地文件(流式 + .part 原子落盘 + 下载 URL SSRF 校验)
 - extract_media:生成类响应 → url/b64_json 落盘 + 产物 sanity 校验
+- image_to_data_uri:本地图 → data URI(统一 20MB 上限防请求体膨胀)
+- to_curl:dry-run 等价 curl(key 掩码 + data URI 递归截断 + shlex.quote)
+- fail / code_for_status / ERROR_HINTS:稳定错误码统一出口 + provider 提示表
 - assert_public_url / parse_host_ip:SSRF 防护(自 video.py 上移共享)
-- ERROR_HINTS:按 (hint_key, HTTP status) 查可执行提示
+- write_failed_sidecar / raise_with_trace:失败留痕
 
 2026-10 吸收自 luminarylane/fal-mcp-server 的 handlers/ 分层模式:provider
 脚本只留 build_body + 常量 + CLI,新增 provider 的边际成本 ≈ build_body + 常量。
 
 历史说明:kolors.py 与 agnes.py 曾自declare「与对方解耦、intentionally not
 imported to avoid cross-provider coupling」。本模块是对该决定的显式推翻
-(2026-10-02 作者批准:按调研建议全面优化):收敛的只有 HTTP 传输骨架,不含
-任何 provider 语义;provider 差异(端点/请求体/提示文案/自检)全部留在各自脚本。
+(2026-10-02 作者批准:按调研建议全面优化):收敛的是 HTTP 传输骨架与统一
+错误出口(含 provider 提示表 ERROR_HINTS——集中管理以保证四个脚本提示一致);
+provider 差异(端点/请求体/尺寸表/自检)仍全部留在各自脚本。
 """
-# ponytail: 本模块不做任何路由/重试决策,只做传输与落盘——决策归各脚本(规则5)。
-# 提示文案统一中文,与 kolors/vision/video 现状一致(agnes 原为英文,随收敛统一)。
+# ponytail: 本模块不做任何路由/重试决策,只做传输、落盘与错误出口——决策归各脚本(规则5)。
 
 import base64
 import ipaddress
 import json
+import re
+import shlex
+import shutil
 import socket
 import sys
 import time
@@ -51,13 +57,13 @@ ERROR_HINTS = {
     ("aiping-vlm", 400): "  → 图片/question 格式不被接受，换图或精简 question",
 }
 
-
 # 稳定错误码全集（调研建议#9：SKILL.md 声明消费者是 agent，错误必须机器可读）。
 # 错误首行统一 `[ERROR] code=<code> ...`，测试钉死全集防漂移（comfy 同款做法）。
+# 范围：云端传输/响应错误与共享层校验；脚本本地的纯参数校验仍是普通 [ERROR]。
 CODES = frozenset({
-    "auth_error",         # 401
+    "auth_error",         # 401 / 未设置 key
     "rate_limited",       # 429
-    "invalid_param",      # 400 / 参数不被接受
+    "invalid_param",      # 400 / 参数不被接受 / 非公网 URL
     "no_task",            # 404（video 轮询任务不存在）
     "empty_result",       # HTTP 200 但无产物（常为内容过滤）
     "abnormal_artifact",  # 产物过小，疑似异常
@@ -85,6 +91,22 @@ def code_for_status(status: int) -> str:
     if status >= 500:
         return "server_error"
     return "invalid_param"
+
+
+# key 形态（agn-xxx / QC-xxx），前 8 位 + *** 脱敏。防御层：个别网关会在 4xx
+# 错误体回显 Authorization 值，响应原文进错误消息/sidecar 前先脱敏（安全审查 M-1）。
+SECRET_RE = re.compile(r"\b(?:agn|QC)-[A-Za-z0-9_.-]{4,}")
+
+
+def mask_secrets(value):
+    """递归脱敏：字符串里的 key 形态子串 → 前 8 位 + ***；list/dict 逐项处理。"""
+    if isinstance(value, str):
+        return SECRET_RE.sub(lambda m: m.group(0)[:8] + "***", value)
+    if isinstance(value, list):
+        return [mask_secrets(v) for v in value]
+    if isinstance(value, dict):
+        return {k: mask_secrets(v) for k, v in value.items()}
+    return value
 
 
 class CloudHTTPError(Exception):
@@ -151,12 +173,19 @@ def post_json(
 
 
 def download_to_file(url: str, out_path: Path, timeout: int, label: str) -> None:
-    """下载 URL 到文件；失败删半成品再退出。urllib 自动跟随重定向（签名 CDN 链接可用）。"""
+    """流式下载 URL 到文件：.part 暂存再 rename（半成品不残留），失败删暂存再退出。
+
+    urllib 自动跟随重定向（签名 CDN 链接可用）。下载 URL 来自 provider 响应——
+    被入侵的 provider 不能借此诱导 CLI 拉取 file:// 或内网地址（安全审查 M-2）。
+    """
+    assert_public_url(url, ctx=f"{label} 下载")
+    tmp = out_path.with_suffix(out_path.suffix + ".part")
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            out_path.write_bytes(r.read())
+        with urllib.request.urlopen(url, timeout=timeout) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f, length=64 * 1024)
+        tmp.rename(out_path)
     except (urllib.error.URLError, TimeoutError) as e:
-        out_path.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
         fail("network_error", f"下载 {label} 返回 URL 失败: {e}")
 
 
@@ -180,10 +209,7 @@ def extract_media(resp_data, out_path: Path, label: str, min_bytes: int, downloa
         fail("malformed_response", f"{label} 响应 data[0] 不是对象: {item}")
     if rp := item.get("revised_prompt"):
         print(f"[INFO] {label} revised_prompt: {rp}", file=sys.stderr)
-    try:
-        url, b64 = item.get("url"), item.get("b64_json")
-    except AttributeError as e:
-        fail("malformed_response", f"{label} 响应 data[0] 结构异常: {e}")
+    url, b64 = item.get("url"), item.get("b64_json")
     if url:
         download(url, out_path)
     elif b64:
@@ -198,6 +224,62 @@ def extract_media(resp_data, out_path: Path, label: str, min_bytes: int, downloa
         out_path.unlink(missing_ok=True)
         fail("abnormal_artifact", f"{label} 返回图片 {size}B < {min_bytes}B，疑似异常")
     return item
+
+
+# 图片支持的格式（base64 data URI）。VLM/图像生成请求体携带 base64 会膨胀 ~33%，
+# 20MB 上限防 >27MB 请求体（413/超时），agnes/vision 统一生效（架构审查 M-5）。
+SUPPORTED_MIME = {
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "webp": "image/webp",
+    "gif": "image/gif",
+}
+MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def image_to_data_uri(path: str, max_bytes: int = MAX_IMAGE_BYTES) -> str:
+    """本地文件 → data:<mime>;base64,<...>。超限/缺格式/文件不存在均显式报错。"""
+    p = Path(path)
+    if not p.exists():
+        fail("invalid_param", f"图片不存在: {path}")
+    size = p.stat().st_size
+    if size > max_bytes:
+        fail(
+            "invalid_param",
+            f"图片 {size // 1024 // 1024}MB > {max_bytes // 1024 // 1024}MB 上限",
+            "  → 先压缩或降分辨率，或改用公网 URL 输入",
+        )
+    ext = p.suffix.lower().lstrip(".")
+    mime = SUPPORTED_MIME.get(ext)
+    if not mime:
+        fail(
+            "invalid_param",
+            f"不支持的图片格式: .{ext}（支持 {'/'.join(SUPPORTED_MIME)}）",
+        )
+    b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{b64}"
+
+
+def to_curl(endpoint: str, body: dict, api_key: str) -> str:
+    """dry-run 等价 curl：key 只留前 8 位防泄露；body 内 data URI 递归截断防日志爆炸；
+    -d 参数 shlex.quote——prompt 含单引号时不产生可被复制执行的注入命令（安全审查 M-3）。"""
+    def _truncate(v):
+        if isinstance(v, str):
+            return v[:40] + "...(truncated)" if v.startswith("data:") else v
+        if isinstance(v, list):
+            return [_truncate(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _truncate(x) for k, x in v.items()}
+        return v
+
+    sample = _truncate(body)
+    return (
+        f"curl -X POST {endpoint} \\\n"
+        f"  -H 'Authorization: Bearer {api_key[:8]}***' \\\n"
+        f"  -H 'Content-Type: application/json' \\\n"
+        f"  -d {shlex.quote(json.dumps(sample, ensure_ascii=False))}"
+    )
 
 
 def write_failed_sidecar(out_path: Path, meta: dict) -> Path | None:
@@ -221,17 +303,17 @@ def write_failed_sidecar(out_path: Path, meta: dict) -> Path | None:
 
 
 def failed_sidecar_meta(out_path: Path, provider: str, error: str, extra: dict | None = None) -> dict:
-    """失败 sidecar 元数据：argv（key 走环境变量，天然不进 argv）+ 错误消息 + 上下文。"""
+    """失败 sidecar 元数据：argv（key 走环境变量，天然不进 argv）+ 脱敏错误消息 + 上下文。"""
     meta = {
         "status": "failed",
         "provider": provider,
         "output": str(out_path),
-        "argv": sys.argv[1:],
-        "error": error[:2000],
+        "argv": mask_secrets(sys.argv[1:]),
+        "error": mask_secrets(error)[:2000],
         "timestamp": int(time.time()),
     }
     if extra:
-        meta.update(extra)
+        meta.update(mask_secrets(extra))
     return meta
 
 
@@ -297,19 +379,24 @@ def parse_host_ip(host: str):
         return None
 
 
+# CGNAT 100.64.0.0/10：ipaddress 不归 private，但属运营商内网，同样不可达公网（安全审查 L-1）
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
 def assert_public_url(u: str, ctx: str = "URL") -> None:
-    """校验公网 http(s) URL，拒绝内网/环回/链路本地/云元数据地址（防 SSRF）。"""
+    """校验公网 http(s) URL，拒绝内网/环回/链路本地/CGNAT/云元数据地址（防 SSRF）。"""
     p = urllib.parse.urlparse(u)
     if p.scheme not in ("http", "https"):
-        sys.exit(
-            f"[ERROR] {ctx} 只接受公网 http(s) URL: {u}\n"
-            "  → 先把本地文件上传到图床/OSS"
+        fail(
+            "invalid_param",
+            f"{ctx} 只接受公网 http(s) URL: {u}",
+            "  → 先把本地文件上传到图床/OSS",
         )
     host = (p.hostname or "").lower()
     if host == "localhost":
-        sys.exit(f"[ERROR] {ctx} 禁止 localhost（SSRF 防护）: {u}")
+        fail("invalid_param", f"{ctx} 禁止 localhost（SSRF 防护）: {u}")
     ip = parse_host_ip(host)
     if ip is None:
         return  # 公网域名，放行
-    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-        sys.exit(f"[ERROR] {ctx} 禁止内网/环回/链路本地/保留地址（SSRF 防护）: {u}")
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip in _CGNAT:
+        fail("invalid_param", f"{ctx} 禁止内网/环回/链路本地/CGNAT/保留地址（SSRF 防护）: {u}")

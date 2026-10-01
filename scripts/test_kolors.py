@@ -225,3 +225,18 @@ class TestImageSizes:
         assert ph > pw  # 竖屏
         lw, lh = parse(kolors.IMAGE_SIZES["16:9"])
         assert lw > lh  # 横屏
+
+
+# ---------- count 校验与批量并发常量（性能审查 F2/F6） ----------
+class TestCountValidation:
+    def test_count_rejected_via_cli(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["kolors.py", "t2i", "-i", "x", "--count", "9"])
+        with pytest.raises(SystemExit):
+            kolors.parse_args()
+
+    def test_count_default_one(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["kolors.py", "t2i", "-i", "x"])
+        assert kolors.parse_args().count == 1
+
+    def test_concurrency_constant_named(self):
+        assert kolors.BATCH_CONCURRENCY == 4
