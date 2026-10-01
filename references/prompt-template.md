@@ -195,6 +195,37 @@ Soft [warm/cool] sidelight. [Pixar 3D / designer toy blind box / flat vector] re
 - Recommended: `t2i base --aspect 3:4` or `1:1`
 - Derivative tip: Want "character turnaround view" → add "front/side/back three-view arrangement" to the subject dimension
 
+#### Character consistency kit（角色一致性三件套 · 结构吸收自 awesome-gpt-image-2，MIT）
+
+角色需要跨姿势/跨视角/跨衍生场景保持可辨识时，三件套配合使用：
+
+**1 · 身份锚点前置** —— 先锁脸型/发型/服装识别点，再写任何变形/风格化/玩具化。
+模型对靠前的身份描述权重更高；先写风格化会把它当成主要约束，角色随之漂移：
+
+```
+Identity anchors (never change): round face, short black bob with straight bangs,
+copper-framed round glasses, freckles on both cheeks, dark brown vest with brass buttons.
+Stylization (may vary): 3D designer-toy rendering, chibi proportions, glossy vinyl material.
+```
+
+**2 · 拆解五官替代笼统词** —— "a beautiful girl"锚定不了任何东西，每个笼统词都换成可核对的具体部位：
+
+| 笼统词 ❌ | 拆解后 ✅ |
+|-----------|-----------|
+| beautiful eyes | large almond eyes, dark brown iris, slight upward tilt at the outer corners |
+| cute face | round face, small pointed chin, button nose with faint freckles |
+| elegant dress | high-collar A-line navy dress, three-quarter sleeves, pearl buttons down the front |
+
+**3 · 动作分解参考表** —— 多姿势表/衍生系列用：4×4 网格 16 面板，左上角编号 1-16，每格一个动作、3-4 行指令。
+**「同一角色/服装/比例」声明必须写在动作列表之前**——长动作序列会导致脸/服装漂移，约束必须先被读到：
+
+```
+A 4x4 character action reference sheet of [identity anchors], 16 panels numbered
+1-16 in each panel's top-left corner.
+The same character, same outfit, same proportions in every panel.
+Panel 1: standing and waving. Panel 2: reading a book. ... Panel 16: sleeping curled up.
+```
+
 ### § Product · Product image / Derivative / Merch visual
 
 **One question at a time to clarify priority**: Purpose (e-commerce hero image / lifestyle scene / merch poster) → Tone (premium / fresh / Chinese style) → Background (solid color / scene / gradient).
@@ -274,6 +305,8 @@ Example: "Animate the character with subtle breathing motion, hair moving gently
 | keyframes keyframe | Describe **inter-frame transitions**, maintain identity/perspective consistency | "Create a smooth transition from the first keyframe to the second, maintaining character identity and consistent camera angle" |
 
 > The four modes correspond to `video.py`'s `t2vid`/`ti2vid`/`multi`/`keyframes`: multi = multi-image fusion, keyframes = keyframe transition, both use `--images URL1 URL2` (at least 2 public images). Both `--images` only accept **public URLs** (video generation does not support base64).
+>
+> **Cross-frame identity consistency**: multi/keyframes suffer from the same drift problem — put the identity anchors from § IP (identity anchors come FIRST) at the start of the instruction, and for multi-shot planning (subject registry / atmosphere lock / inter-frame motion) use [`video-prompt-guide.md`](video-prompt-guide.md) § Multi-Shot Planner.
 
 ### Video Checklist
 
