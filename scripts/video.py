@@ -374,11 +374,15 @@ def main() -> int:
         print("[DRY-RUN] 未执行（无 key / 调试时用）", file=sys.stderr)
         return 0
 
-    video_id, created = create_task(body, api_key)
-    print(f"[INFO] 任务已创建: video_id={video_id} status={created.get('status')}", file=sys.stderr)
-
-    final = poll_task(video_id, api_key, a.poll_interval, a.max_wait)
-    save_video(final, out_path)
+    video_id = None
+    try:
+        video_id, created = create_task(body, api_key)
+        print(f"[INFO] 任务已创建: video_id={video_id} status={created.get('status')}", file=sys.stderr)
+        final = poll_task(video_id, api_key, a.poll_interval, a.max_wait)
+        save_video(final, out_path)
+    except SystemExit as e:
+        # 失败留痕：创建/轮询/下载任一环失败，现场先落盘再退出（调研建议#1）
+        _cc.raise_with_trace(e, out_path, "agnes-video", {"video_id": video_id, "mode": a.mode})
     print(
         f"[OK] 已生成: {out_path} ({out_path.stat().st_size // (1024*1024)} MB)",
         file=sys.stderr,

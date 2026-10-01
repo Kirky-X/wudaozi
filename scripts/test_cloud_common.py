@@ -322,3 +322,46 @@ class TestErrorHints:
     def test_all_hints_actionable(self):
         for key, hint in cc.ERROR_HINTS.items():
             assert hint.strip().startswith("→"), key
+
+
+# ---------- 失败留痕 failed sidecar（调研建议#1） ----------
+class TestFailedSidecar:
+    def test_write_failed_sidecar_json(self, tmp_path):
+        out = tmp_path / "agnes_t2i_1024x1024_1_a.png"
+        sc = cc.write_failed_sidecar(out, {"status": "failed", "provider": "agnes", "error": "boom"})
+        assert sc.exists() and "-failed-" in sc.name and sc.suffix == ".json"
+        data = json.loads(sc.read_text(encoding="utf-8"))
+        assert data["error"] == "boom" and data["status"] == "failed"
+
+    def test_write_failure_never_masks_original_error(self, tmp_path):
+        # 父路径是文件 → mkdir/write 必失败 → 只告警返回 None，绝不抛出掩盖原始错误
+        blocker = tmp_path / "blocker"
+        blocker.write_text("i-am-a-file")
+        out = blocker / "a.png"
+        assert cc.write_failed_sidecar(out, {"error": "x"}) is None
+
+    def test_failed_meta_carries_argv_not_key(self, monkeypatch):
+        monkeypatch.setattr(sys, "argv", ["agnes.py", "t2i", "-i", "x"])
+        meta = cc.failed_sidecar_meta(Path("/tmp/a.png"), "agnes", "HTTP 401", {"mode": "t2i"})
+        assert meta["argv"] == ["t2i", "-i", "x"]
+        assert meta["provider"] == "agnes" and meta["mode"] == "t2i"
+
+    def test_raise_with_trace_appends_sidecar_line(self, tmp_path):
+        out = tmp_path / "a.png"
+        with pytest.raises(SystemExit) as e:
+            try:
+                cc.fail("network_error", "网络炸了")
+            except SystemExit as se:
+                cc.raise_with_trace(se, out, "agnes", {"mode": "t2i"})
+        assert "失败详情已留痕" in str(e.value)
+        assert list(tmp_path.glob("*-failed-*.json"))
+
+    def test_int_exit_code_written_but_not_augmented(self, tmp_path):
+        out = tmp_path / "a.png"
+        with pytest.raises(SystemExit) as e:
+            try:
+                sys.exit(1)
+            except SystemExit as se:
+                cc.raise_with_trace(se, out, "agnes")
+        assert e.value.code == 1  # 退出码语义不变
+        assert list(tmp_path.glob("*-failed-*.json"))  # 但留痕照写

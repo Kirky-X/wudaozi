@@ -385,3 +385,43 @@ class TestCountValidation:
         monkeypatch.setattr("sys.argv", ["agnes.py", "t2i", "-i", "x"])
         a = agnes.parse_args()
         assert a.count == 1
+
+
+# ---------- 失败留痕（调研建议#1） ----------
+class TestFailedSidecarIntegration:
+    def _ns(self, tmp_path, **kw):
+        base = dict(
+            mode="t2i", instruction="x", input=None, aspect="1:1", height=None, width=None,
+            output_dir=str(tmp_path), base64=False, dry_run=False, count=1,
+            transparent="off", chroma="magenta", strict_prompt=False, mask=None,
+        )
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def test_401_writes_failed_sidecar_without_key(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: (_ for _ in ()).throw(_http_error(401)))
+        with pytest.raises(SystemExit) as e:
+            agnes._generate_once(self._ns(tmp_path), "agn-secret-key-123", 1)
+        scs = list(tmp_path.glob("*-failed-*.json"))
+        assert len(scs) == 1, "错误路径必须留痕 failed sidecar"
+        content = scs[0].read_text(encoding="utf-8")
+        assert "agn-secret-key-123" not in content, "key 不得进 sidecar"
+        meta = json.loads(content)
+        assert meta["provider"] == "agnes" and meta["status"] == "failed"
+        assert "留痕" in str(e.value)
+
+    def test_undersized_image_leaves_failed_sidecar(self, tmp_path, monkeypatch):
+        # save_image 产物过小路径：半成品被删，但失败原因必须留痕
+        payload = json.dumps({"data": [{"b64_json": __import__("base64").b64encode(b"tiny").decode()}]}).encode()
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: _FakeResp(payload))
+        with pytest.raises(SystemExit):
+            agnes._generate_once(self._ns(tmp_path), "k", 1)
+        scs = list(tmp_path.glob("*-failed-*.json"))
+        assert len(scs) == 1
+        assert "abnormal_artifact" in scs[0].read_text(encoding="utf-8")
+
+    def test_success_has_no_failed_sidecar(self, tmp_path, monkeypatch):
+        payload = json.dumps({"data": [{"b64_json": __import__("base64").b64encode(b"x" * 2048).decode()}]}).encode()
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: _FakeResp(payload))
+        agnes._generate_once(self._ns(tmp_path), "k", 1)
+        assert not list(tmp_path.glob("*-failed-*.json"))

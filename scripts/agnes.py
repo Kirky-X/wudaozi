@@ -385,11 +385,18 @@ def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
     print(f"{label}[INFO] output={out_path}", file=sys.stderr)
     print(f"{label}[CMD] {to_curl(body, api_key)}", file=sys.stderr)
 
-    resp = call_api(body, api_key)
-    item = save_image(resp, out_path)
-
-    if a.transparent == "post":
-        remove_chroma(out_path, a.chroma)
+    try:
+        resp = call_api(body, api_key)
+        item = save_image(resp, out_path)
+        if a.transparent == "post":
+            remove_chroma(out_path, a.chroma)
+    except SystemExit as e:
+        # 失败留痕：错误路径也落盘 sidecar（成功路径才有 sidecar 的盲区，调研建议#1）
+        _cc.raise_with_trace(
+            e, out_path, "agnes",
+            {"mode": a.mode, "instruction": a.instruction, "size": f"{width}x{height}",
+             "count": a.count, "index": index},
+        )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     sidecar = write_sidecar(

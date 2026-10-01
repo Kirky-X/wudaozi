@@ -163,8 +163,16 @@ def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
     label = f"[{index}/{a.count}] " if a.count > 1 else ""
     print(f"{label}[INFO] 输出={out_path}", file=sys.stderr)
     print(f"{label}[CMD] {to_curl(body, api_key)}", file=sys.stderr)
-    resp = call_api(body, api_key)
-    save_image(resp, out_path)
+    try:
+        resp = call_api(body, api_key)
+        save_image(resp, out_path)
+    except SystemExit as e:
+        # 失败留痕：kolors 此前连 sidecar 机制都没有，错误路径先落盘再退出（调研建议#1）
+        _cc.raise_with_trace(
+            e, out_path, "kolors",
+            {"instruction": a.instruction, "image_size": resolve_image_size(a),
+             "count": a.count, "index": index},
+        )
     print(
         f"{label}[OK] 已生成: {out_path} ({out_path.stat().st_size // 1024} KB)",
         file=sys.stderr,

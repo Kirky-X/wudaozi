@@ -485,3 +485,28 @@ class TestConstants:
     def test_resolutions_pairs(self):
         for k, (w, h) in video.RESOLUTIONS.items():
             assert isinstance(w, int) and isinstance(h, int), k
+
+
+# ---------- 失败留痕（调研建议#1） ----------
+class TestFailedSidecarIntegration:
+    def test_poll_failed_writes_failed_sidecar(self, tmp_path, monkeypatch):
+        # 走 main() 全流程：创建→轮询失败→main 的 except 留痕
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["video.py", "t2vid", "-i", "测", "--output-dir", str(tmp_path),
+             "--poll-interval", "1", "--max-wait", "60"],
+        )
+        responses = iter([
+            _FakeResp(json.dumps({"video_id": "vid_1", "status": "queued"}).encode()),
+            _FakeResp(json.dumps({"status": "failed", "error": "审核不通过"}).encode()),
+        ])
+        monkeypatch.setattr(video.urllib.request, "urlopen", lambda req, timeout: next(responses))
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        with pytest.raises(SystemExit):
+            video.main()
+        scs = list(tmp_path.glob("*-failed-*.json"))
+        assert len(scs) == 1
+        content = scs[0].read_text(encoding="utf-8")
+        assert "审核不通过" in content
+        assert json.loads(content)["video_id"] == "vid_1"

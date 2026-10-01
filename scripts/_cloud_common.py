@@ -24,6 +24,7 @@ import ipaddress
 import json
 import socket
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -197,6 +198,62 @@ def extract_media(resp_data, out_path: Path, label: str, min_bytes: int, downloa
         out_path.unlink(missing_ok=True)
         fail("abnormal_artifact", f"{label} 返回图片 {size}B < {min_bytes}B，疑似异常")
     return item
+
+
+def write_failed_sidecar(out_path: Path, meta: dict) -> Path | None:
+    """失败留痕（调研建议#1；思想吸收自 mcp-server-stability-ai generateImageCore：
+    失败先落盘 request+error 再报错，便于事后审计）。
+
+    与上游的 env 门控 opt-in 不同：wudaozi 无条件落盘——有意加强，消费者是 agent，
+    失败现场比成功现场更需要机器可读详情（规则11）。文件名 <输出名>-failed-<时间戳>.json，
+    与成功 sidecar（同名 .json）不冲突。落盘失败只告警，绝不掩盖原始错误。
+    """
+    sidecar = out_path.with_name(f"{out_path.stem}-failed-{int(time.time())}.json")
+    try:
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(
+            json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return sidecar
+    except OSError as e:
+        print(f"[WARN] 失败留痕写入失败（不掩盖原始错误）: {e}", file=sys.stderr)
+        return None
+
+
+def failed_sidecar_meta(out_path: Path, provider: str, error: str, extra: dict | None = None) -> dict:
+    """失败 sidecar 元数据：argv（key 走环境变量，天然不进 argv）+ 错误消息 + 上下文。"""
+    meta = {
+        "status": "failed",
+        "provider": provider,
+        "output": str(out_path),
+        "argv": sys.argv[1:],
+        "error": error[:2000],
+        "timestamp": int(time.time()),
+    }
+    if extra:
+        meta.update(extra)
+    return meta
+
+
+def raise_with_trace(
+    e: SystemExit, out_path: Path, provider: str, extra: dict | None = None, resume: str | None = None
+) -> None:
+    """在调用方 `except SystemExit` 里调用：失败留痕 +（可选）stdout 输出 resume
+    句柄（供调用方解析），然后重抛追加了留痕信息的错误。
+
+    e.code 为 int（裸 sys.exit(1)）或空时不加工消息，但留痕照写——退出码语义不变。
+    """
+    if resume is not None:
+        print(f"WUDAOZI_RESUME={resume}", flush=True)
+    sc = write_failed_sidecar(out_path, failed_sidecar_meta(out_path, provider, str(e.code), extra))
+    notes = []
+    if resume is not None:
+        notes.append(f"续查: --resume {resume}")
+    if sc is not None:
+        notes.append(f"失败详情已留痕: {sc}")
+    if not notes or not e.code or isinstance(e.code, int):
+        raise
+    raise SystemExit(f"{str(e.code).rstrip()}\n  → " + "；".join(notes)) from None
 
 
 def parse_host_ip(host: str):
