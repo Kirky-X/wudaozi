@@ -365,3 +365,37 @@ class TestFailedSidecar:
                 cc.raise_with_trace(se, out, "agnes")
         assert e.value.code == 1  # 退出码语义不变
         assert list(tmp_path.glob("*-failed-*.json"))  # 但留痕照写
+
+
+# ---------- Retry-After 解析（调研建议#2） ----------
+class TestParseRetryAfter:
+    def test_numeric_seconds(self):
+        import time as _t
+        assert cc.parse_retry_after("7") == 7.0
+
+    def test_zero_is_invalid(self):
+        # 0 视为无效 → 调用方回退退避抖动（防 0 值死循环，comfy 同款）
+        assert cc.parse_retry_after("0") is None
+
+    def test_negative_is_invalid(self):
+        assert cc.parse_retry_after("-3") is None
+
+    def test_garbage_is_invalid(self):
+        assert cc.parse_retry_after("soon") is None
+
+    def test_missing_is_none(self):
+        assert cc.parse_retry_after(None) is None
+        assert cc.parse_retry_after("") is None
+
+    def test_http_date_in_future(self):
+        import time as _t
+        from email.utils import formatdate
+        future = formatdate(_t.time() + 30, usegmt=True)
+        v = cc.parse_retry_after(future)
+        assert v is not None and 0 < v <= 31
+
+    def test_http_date_in_past_is_none(self):
+        import time as _t
+        from email.utils import formatdate
+        past = formatdate(_t.time() - 60, usegmt=True)
+        assert cc.parse_retry_after(past) is None

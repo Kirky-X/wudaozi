@@ -256,6 +256,28 @@ def raise_with_trace(
     raise SystemExit(f"{str(e.code).rstrip()}\n  → " + "；".join(notes)) from None
 
 
+def parse_retry_after(value) -> float | None:
+    """Retry-After 头 → 秒数。支持数字秒与 HTTP-date 双格式（replicate 同款）。
+
+    缺失/非正数/非法 → None，调用方回退退避抖动——0 或过去时间视为无效，
+    防止「0 秒后重试」死循环（comfy 同款语义）。
+    """
+    if not value:
+        return None
+    value = str(value).strip()
+    try:
+        secs = float(value)
+        return secs if secs > 0 else None
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime  # noqa: PLC0415 — 低频路径，延迟导入
+        delta = parsedate_to_datetime(value).timestamp() - time.time()
+        return delta if delta > 0 else None
+    except Exception:
+        return None
+
+
 def parse_host_ip(host: str):
     """host → IPv4Address/IPv6Address 或 None（域名/无法解析）。
 

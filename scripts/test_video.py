@@ -11,6 +11,7 @@ save_video（mock）/ to_curl / 常量一致性。
 
 import io
 import json
+import socket
 import sys
 import urllib.error
 from pathlib import Path
@@ -275,8 +276,21 @@ class _FakeResp:
         return False
 
 
-def _http_error(code: int, body: bytes = b'{"error":"x"}'):
-    return urllib.error.HTTPError("http://x", code, "err", {}, io.BytesIO(body))
+def _http_error(code: int, body: bytes = b'{"error":"x"}', headers=None):
+    return urllib.error.HTTPError("http://x", code, "err", headers or {}, io.BytesIO(body))
+
+
+def _seq_urlopen(monkeypatch, responses):
+    """按脚本依次返回响应/抛异常的 urlopen 桩。"""
+    it = iter(responses)
+
+    def urlopen(req, timeout):
+        item = next(it)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(video.urllib.request, "urlopen", urlopen)
 
 
 class TestCreateTask:
@@ -591,3 +605,159 @@ class TestResumeMode:
         with pytest.raises(SystemExit):
             video.main()
         assert "WUDAOZI_RESUME=vid_1" in capsys.readouterr().out
+
+
+# ---------- 创建任务失败分类重试（调研建议#2） ----------
+class TestCreateTaskRetry:
+    def test_connect_error_retries_then_succeeds(self, monkeypatch):
+        payload = json.dumps({"video_id": "vid_1", "status": "queued"}).encode()
+        _seq_urlopen(monkeypatch, [
+            urllib.error.URLError(ConnectionRefusedError(111, "Connection refused")),
+            _FakeResp(payload),
+        ])
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        monkeypatch.setattr(video.random, "uniform", lambda a, b: 0.0)
+        vid, _ = video.create_task({"model": "x"}, "k")
+        assert vid == "vid_1"
+
+    def test_dns_gaierror_is_connect_phase(self, monkeypatch):
+        payload = json.dumps({"video_id": "vid_2"}).encode()
+        _seq_urlopen(monkeypatch, [
+            urllib.error.URLError(socket.gaierror(8, "nodename nor servname")),
+            _FakeResp(payload),
+        ])
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        monkeypatch.setattr(video.random, "uniform", lambda a, b: 0.0)
+        assert video._is_connect_error(urllib.error.URLError(socket.gaierror())) is True
+        assert video._is_connect_error(urllib.error.URLError("dns fail")) is False
+        vid, _ = video.create_task({"model": "x"}, "k")
+        assert vid == "vid_2"
+
+    def test_budget_exhausted_exits_network_error(self, monkeypatch):
+        _seq_urlopen(monkeypatch, [
+            urllib.error.URLError(ConnectionRefusedError(111, "refused")),
+            urllib.error.URLError(ConnectionRefusedError(111, "refused")),
+        ])
+        monotonic = iter([0, 61])
+        monkeypatch.setattr(video.time, "monotonic", lambda: next(monotonic))
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        monkeypatch.setattr(video.random, "uniform", lambda a, b: 0.0)
+        with pytest.raises(SystemExit) as e:
+            video.create_task({"model": "x"}, "k")
+        assert "code=network_error" in str(e.value)
+
+    def test_bare_timeout_never_retried(self, monkeypatch):
+        # 读超时 = 请求可能已送达、任务可能已创建，自动重试会双倍计费（agnes 无幂等键）
+        calls = {"n": 0}
+
+        def urlopen(req, timeout):
+            calls["n"] += 1
+            raise TimeoutError()
+
+        monkeypatch.setattr(video.urllib.request, "urlopen", urlopen)
+        with pytest.raises(SystemExit) as e:
+            video.create_task({"model": "x"}, "k")
+        assert calls["n"] == 1, "裸超时绝不自动重试"
+        assert "code=timeout" in str(e.value)
+        assert "可能已创建" in str(e.value)
+
+    def test_http_4xx_never_retried(self, monkeypatch):
+        calls = {"n": 0}
+
+        def urlopen(req, timeout):
+            calls["n"] += 1
+            raise _http_error(401)
+
+        monkeypatch.setattr(video.urllib.request, "urlopen", urlopen)
+        with pytest.raises(SystemExit) as e:
+            video.create_task({"model": "x"}, "k")
+        assert calls["n"] == 1
+        assert "code=auth_error" in str(e.value)
+
+
+# ---------- 轮询重试策略：Retry-After 感知 + 终态常量（调研建议#2） ----------
+class TestPollRetryPolicy:
+    def _run(self, monkeypatch, responses, uniform_ret=3.25):
+        sleeps = []
+        _seq_urlopen(monkeypatch, responses)
+        monkeypatch.setattr(video.time, "sleep", lambda s: sleeps.append(s))
+        monkeypatch.setattr(video.random, "uniform", lambda a, b: uniform_ret)
+        return sleeps
+
+    def test_429_honors_retry_after(self, monkeypatch):
+        sleeps = self._run(monkeypatch, [
+            _http_error(429, headers={"Retry-After": "7"}),
+            _FakeResp(json.dumps({"status": "completed", "url": "http://mp4"}).encode()),
+        ])
+        r = video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert r["status"] == "completed"
+        assert sleeps == [7.0], "有合法 Retry-After 必须精确遵循"
+
+    def test_429_zero_retry_after_falls_back_to_jitter(self, monkeypatch):
+        # Retry-After: 0 视为无效 → 回退退避抖动（防 0 值死循环）
+        sleeps = self._run(monkeypatch, [
+            _http_error(429, headers={"Retry-After": "0"}),
+            _FakeResp(json.dumps({"status": "completed", "url": "http://mp4"}).encode()),
+        ])
+        video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert sleeps == [3.25]
+
+    def test_429_without_header_uses_jitter(self, monkeypatch):
+        sleeps = self._run(monkeypatch, [
+            _http_error(429),
+            _FakeResp(json.dumps({"status": "completed", "url": "http://mp4"}).encode()),
+        ])
+        video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert sleeps == [3.25], "无 header 用 jitter 退避替代固定 interval"
+
+    def test_503_504_same_as_429(self, monkeypatch):
+        sleeps = self._run(monkeypatch, [
+            _http_error(503, headers={"Retry-After": "12"}),
+            _FakeResp(json.dumps({"status": "completed", "url": "http://mp4"}).encode()),
+        ])
+        video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert sleeps == [12.0]
+
+    def test_401_poll_exits_immediately(self, monkeypatch):
+        calls = {"n": 0}
+
+        def urlopen(req, timeout):
+            calls["n"] += 1
+            raise _http_error(401)
+
+        monkeypatch.setattr(video.urllib.request, "urlopen", urlopen)
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        with pytest.raises(SystemExit) as e:
+            video.poll_task("vid", "k", interval=1, max_wait=60)
+        assert calls["n"] == 1, "4xx 重试无意义，立即退出"
+        assert "code=auth_error" in str(e.value)
+
+    def test_unknown_status_warns_after_3(self, monkeypatch, capsys):
+        responses = [
+            _FakeResp(json.dumps({"status": "mystery", "progress": 0}).encode())
+            for _ in range(3)
+        ] + [_FakeResp(json.dumps({"status": "completed", "url": "http://mp4"}).encode())]
+        self._run(monkeypatch, responses)
+        video.poll_task("vid", "k", interval=1, max_wait=60)
+        err = capsys.readouterr().err
+        assert "未知状态" in err and "原始响应" in err, "连续 3 次未知状态必须告警并附原始响应"
+
+    def test_known_status_resets_unknown_streak(self, monkeypatch, capsys):
+        responses = [
+            _FakeResp(json.dumps({"status": "mystery"}).encode()),
+            _FakeResp(json.dumps({"status": "mystery"}).encode()),
+            _FakeResp(json.dumps({"status": "queued"}).encode()),   # 已知状态 → 计数重置
+            _FakeResp(json.dumps({"status": "mystery"}).encode()),
+            _FakeResp(json.dumps({"status": "mystery"}).encode()),  # 重置后仅 2 连，不告警
+            _FakeResp(json.dumps({"status": "completed", "url": "http://mp4"}).encode()),
+        ]
+        self._run(monkeypatch, responses)
+        video.poll_task("vid", "k", interval=1, max_wait=60)
+        err = capsys.readouterr().err
+        assert "未知状态" not in err, "已知状态插入后连续计数必须重置（未达连续 3 次不告警）"
+
+
+class TestTerminalConstant:
+    def test_terminal_states(self):
+        assert video.TERMINAL == {"completed", "failed"}
+        assert "queued" in video.KNOWN_STATES and "in_progress" in video.KNOWN_STATES

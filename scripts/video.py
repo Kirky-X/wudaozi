@@ -29,6 +29,8 @@
 import argparse
 import json
 import os
+import random
+import socket
 import sys
 import time
 import urllib.error
@@ -41,6 +43,30 @@ import _cloud_common as _cc
 
 # SSRF 防护自 2026-10 上移 _cloud_common（vision.py 同享）；保留原名，调用点与 tests 不动
 from _cloud_common import assert_public_url as _assert_public_url  # noqa: F401
+
+# ── 创建任务重试策略（调研建议#2，吸收自 comfy-python-sdk retry.py 的显式谓词表）──
+# 仅 connect 阶段错误可安全自动重试：请求未送达，不会重复建任务。
+CONNECT_ERRORS = (ConnectionRefusedError, ConnectionResetError, ConnectionAbortedError, socket.gaierror)
+RETRY_BUDGET_S = 60.0  # 创建任务重试总预算
+BACKOFF_BASE_S = 0.5   # full-jitter 退避起点
+BACKOFF_CAP_S = 15.0   # full-jitter 退避封顶
+# 终态显式常量：completed/failed 之外的 status 都按未知处理（连续 3 次告警）
+TERMINAL = {"completed", "failed"}
+KNOWN_STATES = TERMINAL | {"queued", "in_progress"}
+
+
+def _is_connect_error(e: urllib.error.URLError) -> bool:
+    """URLError 的 cause 是否 connect 阶段错误（拒绝/重置/DNS）。
+
+    读超时/裸 TimeoutError 无法区分连接与读阶段——读超时意味着请求可能已送达、
+    任务可能已创建，自动重试会双倍计费（agnes 无幂等键），绝不自动重试。
+    """
+    return isinstance(getattr(e, "reason", None), CONNECT_ERRORS)
+
+
+def _full_jitter(attempt: int) -> float:
+    """full-jitter 指数退避：0.5s 起 ×2、15s 封顶，随机抖动防惊群。"""
+    return random.uniform(0, min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2 ** attempt))
 
 CREATE_ENDPOINT = "https://apihub.agnes-ai.com/v1/videos"
 POLL_ENDPOINT = "https://apihub.agnes-ai.com/agnesapi"
@@ -160,8 +186,38 @@ def build_body(
 
 
 def create_task(body: dict, api_key: str) -> tuple:
-    """POST 创建任务（共享传输）。返回 (video_id, 原始响应)。失败 sys.exit。"""
-    r = _cc.post_json(CREATE_ENDPOINT, body, api_key, TIMEOUT, label="video")
+    """POST 创建任务（连接阶段失败按 full-jitter 退避重试，60s 预算）。返回 (video_id, 原始响应)。
+
+    重试分类（调研建议#2，显式谓词表；与「显式报错不 fallback」不冲突——
+    retry=同一请求再试，fallback=换 provider 假装成功）：
+    - URLError 且 cause 为 connect 阶段错误 → 重试（请求未送达，安全）
+    - 裸 TimeoutError → 绝不自动重试（任务可能已创建，重提交双倍计费），引导 --resume
+    - HTTP 4xx/5xx → 一律不重试，显式报错
+    """
+    attempt = 0
+    deadline = time.monotonic() + RETRY_BUDGET_S
+    while True:
+        try:
+            r = _cc.post_json_raw(CREATE_ENDPOINT, body, api_key, TIMEOUT)
+            break
+        except _cc.CloudHTTPError as e:
+            _cc.exit_http_error("video", e)
+        except urllib.error.URLError as e:
+            if not _is_connect_error(e) or time.monotonic() >= deadline:
+                _cc.fail("network_error", f"创建任务网络不可达: {e.reason}", "  → 检查网络/代理/DNS")
+            delay = _full_jitter(attempt)
+            print(
+                f"[WARN] 创建任务连接失败（{e.reason}），{delay:.1f}s 后重试（预算 {RETRY_BUDGET_S:.0f}s）",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+            attempt += 1
+        except TimeoutError:
+            _cc.fail(
+                "timeout",
+                f"创建任务 {TIMEOUT}s 超时（任务可能已创建，不自动重试以防重复计费）",
+                "  → 稍后用 --resume <video_id> 续查；video_id 可在 provider 控制台查询",
+            )
     vid = r.get("video_id") or r.get("id") or r.get("task_id")
     if not vid:
         _cc.fail("malformed_response", f"创建任务响应无 video_id/id/task_id: {r}")
@@ -171,11 +227,20 @@ def create_task(body: dict, api_key: str) -> tuple:
 def poll_task(
     video_id: str, api_key: str, interval: int, max_wait: int
 ) -> dict:
-    """轮询 GET /agnesapi?video_id=X 直到 completed/failed/超时。返回最终响应。"""
+    """轮询 GET /agnesapi?video_id=X 直到 completed/failed/超时。返回最终响应。
+
+    重试策略（调研建议#2）：
+    - 404 → no_task 立即退出；其余 4xx（除 429）→ 立即退出（重试无意义）
+    - 429/503/504 → 读 Retry-After（数字秒或 HTTP-date；0/非法回退退避抖动）
+    - 其余 5xx/网络抖动 → full-jitter 退避重试（替代原固定 interval，防惊群）
+    - 连续 3 次未知状态 → 打印原始响应告警（provider 可能改了状态枚举）
+    """
     url = f"{POLL_ENDPOINT}?video_id={urllib.parse.quote(video_id)}"
     deadline = time.time() + max_wait
     last_status = None
     last_progress = None
+    unknown_streak = 0
+    attempt = 0
     while time.time() < deadline:
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {api_key}"}
@@ -186,15 +251,22 @@ def poll_task(
         except urllib.error.HTTPError as e:
             if e.code == 404:
                 _cc.fail("no_task", f"任务不存在（404）: video_id={video_id}")
-            if e.code == 401:
-                _cc.fail("auth_error", f"轮询 HTTP 401: AGNES_API_KEY 失效")
-            # 5xx/网络抖动重试，不致命
-            print(f"[WARN] 轮询 HTTP {e.code}，{interval}s 后重试", file=sys.stderr)
-            time.sleep(interval)
+            if e.code < 500 and e.code != 429:
+                code = "auth_error" if e.code == 401 else "invalid_param"
+                _cc.fail(code, f"轮询 HTTP {e.code}，重试无意义: video_id={video_id}")
+            headers = e.headers or {}
+            delay = _cc.parse_retry_after(headers.get("Retry-After"))
+            source = f"遵循 Retry-After" if delay else "退避抖动"
+            delay = delay if delay else _full_jitter(attempt)
+            print(f"[WARN] 轮询 HTTP {e.code}（{source}），{delay:.1f}s 后重试", file=sys.stderr)
+            time.sleep(delay)
+            attempt += 1
             continue
         except (urllib.error.URLError, TimeoutError) as e:
-            print(f"[WARN] 轮询网络异常 {e}，{interval}s 后重试", file=sys.stderr)
-            time.sleep(interval)
+            delay = _full_jitter(attempt)
+            print(f"[WARN] 轮询网络异常 {e}，{delay:.1f}s 后重试", file=sys.stderr)
+            time.sleep(delay)
+            attempt += 1
             continue
 
         status = resp.get("status", "unknown")
@@ -209,13 +281,23 @@ def poll_task(
         if status == "failed":
             err = resp.get("error") or resp
             _cc.fail("generation_failed", f"视频生成失败: {err}")
+        if status not in KNOWN_STATES:
+            unknown_streak += 1
+            if unknown_streak == 3:
+                raw = json.dumps(resp, ensure_ascii=False)[:300]
+                print(
+                    f"[WARN] 连续 {unknown_streak} 次未知状态 status={status!r}，原始响应: {raw}",
+                    file=sys.stderr,
+                )
+        else:
+            unknown_streak = 0
         time.sleep(interval)
 
     _cc.fail(
         "timeout",
-        f"轮询超时（{max_wait}s），最后状态={last_status}。\n"
-        f"  → video_id={video_id} 可稍后手动查询：\n"
-        f"    curl '{url}' -H 'Authorization: Bearer ***'",
+        f"轮询超时（{max_wait}s），最后状态={last_status}。",
+        f"  → video_id={video_id} 稍后用 --resume {video_id} 续查"
+        f"（任务可能仍在跑，勿重新提交以防双倍计费）",
     )
 
 
