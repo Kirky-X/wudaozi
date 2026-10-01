@@ -160,10 +160,12 @@ Higher quality questions use **5-segment structure**: `[Role] + [Task] + [Contex
 
 Video prompt mindset **differs from image generation** — describes "evolution over time" rather than a single moment. Core formula: `[Subject] + [Action] + [Scene] + [Camera movement] + [Lighting] + [Style]` (see `references/prompt-template.md` § Video Generation). Add "camera movement + motion description":
 
-- Camera: push-in/pull-out/pan/orbit/static
+- Camera: push-in/pull-out/pan/orbit/static — full paste-ready camera-move library: [`references/video-prompt-guide.md`](references/video-prompt-guide.md) § Camera-Move Library
 - **Motion description** (soul of video): Explicitly state "what moves + what stays stable" — "...hair moving gently in the wind, **while keeping the face and outfit consistent**", avoid subject drift
 - Evolution: Timeline "first...then...finally..."
 - Duration: 3s (test composition) / 5s (default) / 10s (full narrative) / 18s (long take, ≤441 frames)
+
+> **When to escalate to the 5-stage template**: narrative shorts, second-by-second timelines, or high identity-consistency demands → use [`references/video-prompt-guide.md`](references/video-prompt-guide.md) § 5-Stage Template (theme tags → subject/scene anchoring → atmosphere/quality → camera rules → timeline, order matters). multi/keyframes multi-shot → § Multi-Shot Planner (subject registry + atmosphere lock + inter-frame motion, three-piece set). Simple single-shot needs stay on the 6-element fast path.
 
 > Video generation is **slow** (~1-3 minutes for 3s video), test with short duration first, extend when satisfied.
 
