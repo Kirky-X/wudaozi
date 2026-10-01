@@ -388,5 +388,5 @@ python3 scripts/kolors.py __selfcheck__   # Image generation kolors: pure functi
 python3 scripts/boogu.py  __selfcheck__   # Image generation boogu: matrix lookup/16-alignment/resource detection
 python3 scripts/vision.py __selfcheck__   # Image understanding: dual provider table + data URI + key existence
 python3 scripts/video.py  __selfcheck__   # Video generation: 8n+1 rule + resolution/duration presets + key existence
-python3 -m pytest scripts/               # Full unit tests (5 scripts, no real API/model calls)
+python3 -m pytest scripts/               # Full unit tests (5 scripts + shared _cloud_common, no real API/model calls)
 ```
