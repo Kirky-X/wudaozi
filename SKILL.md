@@ -296,14 +296,18 @@ AGNES_API_KEY=agn-xxx python3 scripts/video.py keyframes -i "Maintain character 
 
 # Debug: only view create task curl
 AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid -i "..." --dry-run
+
+# Resume an interrupted/timed-out task (no re-submit, no duplicate billing);
+# video_id comes from the WUDAOZI_RESUME=<id> line printed to stdout on failure
+AGNES_API_KEY=agn-xxx python3 scripts/video.py t2vid --resume <video_id>
 ```
 
-video.py async flow: POST `/v1/videos` to create task, get `video_id` → poll `GET /agnesapi?video_id=X` until `completed`/`failed`/timeout → download mp4 to `$PWD/video-output/`.
+video.py async flow: POST `/v1/videos` to create task, get `video_id` → poll `GET /agnesapi?video_id=X` until `completed`/`failed`/timeout → download mp4 to `$PWD/video-output/`. On failure/timeout it writes a `<output>-failed-<ts>.json` sidecar and prints a machine-readable `WUDAOZI_RESUME=<video_id>` line on stdout (all logs go to stderr) — pass that id to `--resume` to continue polling the same task instead of re-submitting.
 
 > 🔴 **CHECKPOINT · Video hard constraints**:
 > - **num_frames must be 8n+1** (81/121/241/441), ≤441; frame_rate 1-60. Entry validation rejects to avoid server 400. Use `--duration` presets for automatic compliance.
 > - **ti2vid `--image` / multi·keyframes `--images` only accept public http(s) URLs** (explicitly documented, video generation does not support base64) — local images must be uploaded to image hosting/OSS first. multi/keyframes require ≥2 URLs (single image uses ti2vid).
-> - Video generation is slow, `--max-wait` defaults to 1200s (covers longest 18s video generation time); timeout prints `video_id` for manual `curl` query.
+> - Video generation is slow, `--max-wait` defaults to 1200s (covers longest 18s video generation time); on timeout do **not** re-submit — resume with `--resume <video_id>` from the `WUDAOZI_RESUME=` stdout line (re-submitting may double-bill, the task may still be running).
 
 ---
 
@@ -313,7 +317,7 @@ Full default-value table: [`references/boogu-guide.md`](references/boogu-guide.m
 
 ## Failure Modes and Fallback
 
-> All cloud providers (agnes/kolors/vision/video) report errors explicitly and exit without automatic fallback on failure; user decides to retry or switch provider. Below table covers boogu local failure fixes.
+> All cloud providers (agnes/kolors/vision/video) report errors explicitly and exit without automatic fallback on failure; user decides to retry or switch provider. Every cloud error's first line is machine-readable: `[ERROR] code=<code> ...` with a stable code (`auth_error` / `rate_limited` / `invalid_param` / `no_task` / `empty_result` / `abnormal_artifact` / `network_error` / `timeout` / `malformed_response` / `server_error` / `generation_failed`), and the failure site is written to `<output>-failed-<ts>.json` for post-mortem. `empty_result` usually means the prompt was content-filtered — rewrite the prompt instead of switching provider. Below table covers boogu local failure fixes.
 
 | Trigger | First-line fix | Fallback |
 |---------|----------------|----------|
@@ -323,7 +327,7 @@ Full default-value table: [`references/boogu-guide.md`](references/boogu-guide.m
 | Blurry output | Check if H×W set too large but max_input too small (scripts auto-calculate by official formula) | Redo with base, or use higher resolution preset |
 | ti2i edit "drifts" | Lower text_guidance, increase image_guidance | Use base instead of turbo (CFG more controllable) |
 | Output doesn't match expectation | First adjust prompt (check 7 dimensions complete), then adjust seed/steps | Reproduce with same seed + single-dimension tuning |
-| Video polling timeout | Increase `--max-wait`, or use printed `video_id` for manual `curl` query | Shorter duration (`--duration 3s`) to reduce generation time |
+| Video polling timeout | Increase `--max-wait`, or `--resume <video_id>` (from the `WUDAOZI_RESUME=` stdout line) to keep polling | Shorter duration (`--duration 3s`) to reduce generation time |
 | Video file <10KB | Task abnormal completion, check prompt/seed, rerun | Change `--aspect` or `--duration` preset |
 
 ---

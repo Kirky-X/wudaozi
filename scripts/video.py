@@ -295,7 +295,7 @@ def parse_args() -> argparse.Namespace:
         help="t2vid=文生视频, ti2vid=图生视频(单图首帧), multi=多图融合, keyframes=关键帧过渡",
     )
     p.add_argument(
-        "--instruction", "-i", required=True, help="视频内容描述"
+        "--instruction", "-i", default=None, help="视频内容描述（--resume 续查时可不填）"
     )
     p.add_argument(
         "--image", default=None, help="ti2vid 首帧图公网 URL（ti2vid 必填）"
@@ -344,7 +344,21 @@ def parse_args() -> argparse.Namespace:
         "--output-dir", "-o", default=None, help="输出目录（默认 $PWD/video-output/）"
     )
     p.add_argument("--dry-run", action="store_true", help="只打印创建任务 curl")
-    return p.parse_args()
+    p.add_argument(
+        "--resume",
+        default=None,
+        metavar="VIDEO_ID",
+        help="续查已有任务：跳过创建，直接轮询该 video_id 并落盘（超时/中断后用，"
+        "配合失败时 stdout 输出的 WUDAOZI_RESUME=<id> 行）",
+    )
+    a = p.parse_args()
+    if not a.resume and not a.instruction:
+        p.error("-i/--instruction 必填；续查已有任务请用 --resume <video_id>")
+    if a.resume and (a.image or a.images):
+        p.error("--resume 与 --image/--images 互斥（续查不重新提交素材）")
+    if a.resume and a.dry_run:
+        p.error("--resume 与 --dry-run 互斥")
+    return a
 
 
 def main() -> int:
@@ -357,32 +371,41 @@ def main() -> int:
             "  → export AGNES_API_KEY=agn-xxx 后重试"
         )
 
-    width, height = resolve_resolution(a)
-    num_frames, frame_rate = resolve_frames(a)
-    out_path = resolve_output(a, width, height)
-    body = build_body(a, width, height, num_frames, frame_rate)
+    if a.resume:
+        # 续查模式：不重新提交任务（避免重复计费），原始分辨率未知，文件名尺寸仅作标识
+        out_path = resolve_output(a, *RESOLUTIONS["16:9"])
+        video_id = a.resume
+        print(f"[INFO] resume video_id={video_id}（跳过创建，直接轮询）", file=sys.stderr)
+        print(f"[INFO] 输出={out_path}", file=sys.stderr)
+    else:
+        width, height = resolve_resolution(a)
+        num_frames, frame_rate = resolve_frames(a)
+        out_path = resolve_output(a, width, height)
+        body = build_body(a, width, height, num_frames, frame_rate)
 
-    secs = num_frames / frame_rate
-    print(
-        f"[INFO] mode={a.mode} size={width}x{height} frames={num_frames}@{frame_rate}fps (~{secs:.1f}s)",
-        file=sys.stderr,
-    )
-    print(f"[INFO] 输出={out_path}", file=sys.stderr)
-    print(f"[CMD] {to_curl(body, api_key)}", file=sys.stderr)
+        secs = num_frames / frame_rate
+        print(
+            f"[INFO] mode={a.mode} size={width}x{height} frames={num_frames}@{frame_rate}fps (~{secs:.1f}s)",
+            file=sys.stderr,
+        )
+        print(f"[INFO] 输出={out_path}", file=sys.stderr)
+        print(f"[CMD] {to_curl(body, api_key)}", file=sys.stderr)
 
-    if a.dry_run:
-        print("[DRY-RUN] 未执行（无 key / 调试时用）", file=sys.stderr)
-        return 0
+        if a.dry_run:
+            print("[DRY-RUN] 未执行（无 key / 调试时用）", file=sys.stderr)
+            return 0
+        video_id = None
 
-    video_id = None
     try:
-        video_id, created = create_task(body, api_key)
-        print(f"[INFO] 任务已创建: video_id={video_id} status={created.get('status')}", file=sys.stderr)
+        if not a.resume:
+            video_id, created = create_task(body, api_key)
+            print(f"[INFO] 任务已创建: video_id={video_id} status={created.get('status')}", file=sys.stderr)
         final = poll_task(video_id, api_key, a.poll_interval, a.max_wait)
         save_video(final, out_path)
     except SystemExit as e:
-        # 失败留痕：创建/轮询/下载任一环失败，现场先落盘再退出（调研建议#1）
-        _cc.raise_with_trace(e, out_path, "agnes-video", {"video_id": video_id, "mode": a.mode})
+        # 失败留痕 + 机器可读恢复句柄：stdout 单行 WUDAOZI_RESUME=<id> 供调用方解析
+        #（video 日志全走 stderr，stdout 只这一行，互不污染）（调研建议#3）
+        _cc.raise_with_trace(e, out_path, "agnes-video", {"video_id": video_id, "mode": a.mode}, resume=video_id)
     print(
         f"[OK] 已生成: {out_path} ({out_path.stat().st_size // (1024*1024)} MB)",
         file=sys.stderr,

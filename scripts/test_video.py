@@ -262,8 +262,11 @@ class _FakeResp:
     def __init__(self, payload: bytes):
         self._p = payload
 
-    def read(self):
-        return self._p
+    def read(self, length=-1):
+        # length 参数兼容 shutil.copyfileobj 的流式读取（视频下载走 copyfileobj）；
+        # 一次性返回后清空，让 copyfileobj 下次读到空即停，不死循环
+        data, self._p = self._p, b""
+        return data
 
     def __enter__(self):
         return self
@@ -510,3 +513,81 @@ class TestFailedSidecarIntegration:
         content = scs[0].read_text(encoding="utf-8")
         assert "审核不通过" in content
         assert json.loads(content)["video_id"] == "vid_1"
+
+
+# ---------- --resume 恢复句柄（调研建议#3） ----------
+class TestResumeMode:
+    def _argv(self, tmp_path, vid, *extra):
+        return ["video.py", "t2vid", "--resume", vid, "--output-dir", str(tmp_path),
+                "--poll-interval", "1", "--max-wait", "60", *extra]
+
+    def test_resume_without_instruction_ok(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "vid_9"))
+        a = video.parse_args()
+        assert a.resume == "vid_9"
+        assert a.instruction is None
+
+    def test_no_instruction_no_resume_errors(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(sys, "argv", ["video.py", "t2vid", "--output-dir", str(tmp_path)])
+        with pytest.raises(SystemExit):
+            video.parse_args()
+
+    def test_resume_with_image_errors(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "v", "--image", "https://x/a.png"))
+        with pytest.raises(SystemExit):
+            video.parse_args()
+
+    def test_resume_skips_create_and_downloads(self, monkeypatch, tmp_path, capsys):
+        # 直接轮询 vid_9 → completed → 下载；创建接口不应被调用
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "vid_9"))
+        responses = iter([
+            _FakeResp(json.dumps({"status": "completed", "progress": 100, "url": "http://mp4/x"}).encode()),
+            _FakeResp(b"x" * (20 * 1024)),
+        ])
+        monkeypatch.setattr(video.urllib.request, "urlopen", lambda req, timeout: next(responses))
+        assert video.main() == 0
+        assert list(tmp_path.glob("*.mp4")), "resume 成功必须落盘 mp4"
+
+    def test_resume_timeout_emits_machine_readable_handle(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(sys, "argv", self._argv(tmp_path, "vid_9"))
+        # time 是单例模块：video.time 即 _cc.time——文件名时间戳、轮询 deadline、
+        # 失败 sidecar 的 meta 与文件名时间戳都会消费。伪时钟末值重复，对多出的消费者鲁棒
+        class _SeqTime:
+            def __init__(self, *vals):
+                self._vals, self._i = list(vals), 0
+
+            def __call__(self):
+                v = self._vals[min(self._i, len(self._vals) - 1)]
+                self._i += 1
+                return v
+
+        monkeypatch.setattr(video.time, "time", _SeqTime(0, 0, 100_000, 0))
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        with pytest.raises(SystemExit) as e:
+            video.main()
+        out = capsys.readouterr()
+        assert "WUDAOZI_RESUME=vid_9" in out.out, "stdout 必须有机器可读恢复句柄"
+        assert "--resume vid_9" in str(e.value)
+        assert "WUDAOZI_RESUME" not in out.err, "句柄只走 stdout（日志走 stderr，互不污染）"
+
+    def test_normal_failure_also_emits_resume_handle(self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["video.py", "t2vid", "-i", "测", "--output-dir", str(tmp_path),
+             "--poll-interval", "1", "--max-wait", "60"],
+        )
+        responses = iter([
+            _FakeResp(json.dumps({"video_id": "vid_1", "status": "queued"}).encode()),
+            _FakeResp(json.dumps({"status": "failed", "error": "审核不通过"}).encode()),
+        ])
+        monkeypatch.setattr(video.urllib.request, "urlopen", lambda req, timeout: next(responses))
+        monkeypatch.setattr(video.time, "sleep", lambda s: None)
+        with pytest.raises(SystemExit):
+            video.main()
+        assert "WUDAOZI_RESUME=vid_1" in capsys.readouterr().out
