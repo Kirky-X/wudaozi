@@ -118,6 +118,18 @@
 
 > Image-to-image prompt mindset **differs from text-to-image**: instead of describing a scene from scratch, it declares "what to change + what to preserve". Works with both agnes-image-2.1-flash and boogu ti2i.
 
+### Reference role: `--ref-role subject|style|composition`
+
+参考图"拿来做什么"决定指令语义，CLI 用 `--ref-role` 声明（agnes/boogu，确定性子句注入）：
+
+| Role | 语义 | 典型需求 |
+|------|------|----------|
+| `subject`（默认） | 参考图即主体本身，行为与历史一致 | "把她的背景换成沙滩"、"给这只猫戴顶帽子" |
+| `style` | **只借画风勿抄主体**——注入"参考图仅作风格参照（色板/质感/渲染风格），不得复现其主体"约束 | "用这张图的赛博朋克画风画一只完全不同的机器狗" |
+| `composition` | **只借构图勿抄主体**——注入"仅作构图参照（取景/裁切/机角/光位），渲染不同主体"约束 | "借这张海报的构图与光位，主体换成我们的产品" |
+
+裸参考图无法表达后两种意图（模型会无条件把参考图当主体）——"借构图换主体"类需求必须显式传 role。
+
 ### Core Formula
 
 ```
@@ -261,6 +273,19 @@ Add by scenario:
 - Landscape: jarring elements, artificial feel, oversaturation
 - Product: background clutter, excessive reflections
 
+## Variant Syntax (`{a|b|c}` / `{_词库_}`) — batch with intended differences
+
+`--count > 1` 时同一 instruction 复制 N 张 = N 张同质图。要刻意差异，在 instruction 里写变体语法（agnes/kolors，每份渲染一个**非重复**变体，组合不足时告警过采样）：
+
+```
+一只{橘色|黑色|白色}猫，{_lighting_}，电影感
+python3 scripts/agnes.py t2i -i "..." --count 6     # 6 份各不相同的猫
+```
+
+- `{a|b|c}`：花括号枚举，一个取值位置；`{_lighting_}`：引用 [`wordbanks/lighting.txt`](wordbanks/lighting.txt) 词库（每行一个词，自建词库往 `references/wordbanks/` 放）
+- 无变体语法时行为不变（N 份原样）；普通 `{花括号}`（无 `|`）不是语法，原样保留
+- 云端出图不可复现（agnes/kolors 无 seed）；需要锚定复现的批量调参走 boogu `--seed` + `--sweep`
+
 ---
 
 ## JSON Structured Prompt Block (advanced · layout-precise needs)
@@ -382,9 +407,24 @@ Example: "You are an image analysis assistant. Analyze the provided image, summa
 - **Standard formats**: JPG/JPEG/PNG/WebP; for screenshots/UI images, it's recommended to add text description in the prompt to specify focus areas
 - **Provider selection**: OCR/formulas/problem solving → aiping DeepSeek-OCR-2; general descriptions/UI analysis → agnes-2.0-flash
 
+### DeepSeek-OCR-2 官方 prompt（模型只认两条主提示）
+
+来源：deepseek-ai/DeepSeek-OCR-2 README（Main Prompts 仅两条）。经 OpenAI 兼容接口调用时 `<image>` 占位由 image_url 部分承担，文本部分写法：
+
+| 用途 | 文本部分（-q 参数） |
+|------|---------------------|
+| 通用识别/自由 OCR | `<image>\nFree OCR.` |
+| 版面级文档转 markdown（带 grounding 坐标） | `<image>\n<|grounding|>Convert the document to markdown.` |
+
+- grounding 模式输出含 `<|ref|>标签<|det|>[[坐标]]|>` 结构标记，vision.py 默认剥离（`--raw` 保留原文）；坐标为 999 归一化值
+- 解码参数已对齐官方参考实现：temperature=0 + max_tokens=8192（`finish_reason=length` 有截断告警）
+- **多页文档**：vision 只吃单图——pdftoppm/PyMuPDF 拆页 → 逐页 vision.py → 以 `<--- Page Split --->` 拼接（agent 编排，SKILL.md § 4D）
+- **网关透传已实测**（2026-10-02，aiping）：`temperature` 真实生效（0 两次输出完全一致；5.0 高温乱码，网关不做上限校验）；`<image>\nFree OCR.` 经 chat/completions 直接可用；`finish_reason` 正常返回（stop/length 均观察到）
+
 ### Understanding Checklist
 
 - [ ] Did you provide a role (affects analysis depth)?
 - [ ] Is the task specific and answerable (avoid vague instructions like "describe this")?
 - [ ] Did you specify the output format (table/steps/JSON/three-part)?
 - [ ] Did you avoid private URLs for image input (local uses base64, remote confirmed publicly accessible)?
+- [ ] OCR/文档转写任务用的是官方 prompt 措辞（而非自拟描述）？

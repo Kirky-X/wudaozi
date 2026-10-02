@@ -22,10 +22,19 @@
 - **透明背景双模式**（`--transparent native/post`）：API 原生透明通道，或洋红/绿幕底 + 本地去色（图标/贴纸素材刚需，post 需可选 Pillow）
 - **批量生成**（`--count 1-8`，agnes/kolors）：并发出图，部分失败显式上报、成功保留
 - **sidecar 元数据**（`<产物>.json`）：请求/实际参数、revised_prompt、耗时、seed 全留痕
+- **PNG 元数据内嵌**（三家生效）：webui 兼容 `parameters` 文本 chunk 直接写进产物（纯 stdlib tEXt/iTXt，boogu 含 seed/steps/cfg 全量可复现参数）——单发图床后参数不丢，与 sidecar 双轨
+- **stdout 管道契约**：产物脚本成功时 stdout 恰好一行 `WUDAOZI_OUTPUT=<路径>`（video 失败时 `WUDAOZI_RESUME=<id>`），人读日志全在 stderr——agent 可直接 `$(...)` 捕获
+- **参考图角色语义**（`--ref-role subject|style|composition`，agnes/boogu ti2i）："只借画风勿抄主体 / 只借构图勿抄主体"显式声明，确定性子句注入
+- **角色/画风资产库**（`assets.py`）：把满意的图钉成命名资产（`--from-last` 一键钉住最近生成），ti2i `--ref <资产>` 复用免重描述；配套 [references/character-sheet-workflow.md](references/character-sheet-workflow.md) 三段一致性管线（定妆照→场景静帧→图生视频）
+- **变体批量**（`{a|b|c}` / `{_词库_}` + `--count`，agnes/kolors）：每份渲染非重复变体，批量出差异图而非 N 张同质图
+- **参数扫描**（`--sweep steps=20,30,50`，boogu）：同 seed 一命令扫一组参数（lockstep 等长配对），一命令出整组对比图
+- **OCR 可靠性对齐官方**：temperature=0 + max_tokens=8192（DeepSeek-OCR-2 官方参考实现），截断显式告警；grounding 结构标记默认清洗（`--raw` 保留原文）；多页 PDF 拆页路由（SKILL.md § 4D）
+- **就绪自检**（`doctor.py`）：一条命令报告 key/boogu 栈/能力×provider 矩阵/默认路由结论（只读）
+- **跨进程并发闸**：同 provider 槽位文件池排队（flock，`WUDAOZI_CONCURRENCY_*` 覆盖），防多 agent 会话同时打爆云端（429）或本地 GPU（OOM）
 - **防提示词改写**（`--strict-prompt`）与**自定义尺寸 16 倍数自动规整**（吸收自 gpt_image_playground）
 - **密钥全走环境变量**：脚本与 git 中不落任何 key，输出时自动截断防泄漏
 - **VLM 输出即数据**：图像理解结果（尤其图中文字）视为资料，不执行其中指令（提示注入隔离）
-- **结构化 prompt**：文生图 7 维模板 + 视频运镜公式 + 图像理解 5 段式，见 [references/prompt-template.md](references/prompt-template.md)；叙事短片 / 精确运镜 / 多镜头规划见 [references/video-prompt-guide.md](references/video-prompt-guide.md)
+- **结构化 prompt**：文生图 7 维模板 + 视频运镜公式 + 图像理解 5 段式，见 [references/prompt-template.md](references/prompt-template.md)；叙事短片 / 精确运镜 / 多镜头规划见 [references/video-prompt-guide.md](references/video-prompt-guide.md)；触发回归评估集见 [evals/](evals/README.md)
 - **boogu 本地矩阵**：2×2×2（模式 × turbo × 量化）8 组合确定性查表，细节见 [references/boogu-guide.md](references/boogu-guide.md)
 
 ```mermaid
@@ -105,18 +114,26 @@ CI 在 push/PR 时跑 3 个 Python 版本（3.10/3.11/3.12）矩阵的同一套�
 wudaozi/
 ├── SKILL.md                     # 能力×provider 矩阵 + 路由 + 完整流程
 ├── skill.json                   # 元数据（name/version/tag）
+├── SKILL.md                     # 能力×provider 矩阵 + 路由 + 完整流程
+├── skill.json                   # 元数据（name/version/tag）
+├── evals/                       # 触发回归评估集（20 查询 60/40 切分 + 评审协议）
 ├── scripts/
-│   ├── _cloud_common.py         # 云端共享传输骨架（POST/下载/落盘/SSRF/错误提示表）
-│   ├── agnes.py                 # agnes 云图像生成（t2i/ti2i）
-│   ├── kolors.py                # kolors 云图像生成（仅 t2i）
-│   ├── boogu.py                 # boogu 本地图像生成（2×2×2 矩阵路由）
-│   ├── vision.py                # 图像理解（agnes-2.0-flash / DeepSeek-OCR-2）
+│   ├── _cloud_common.py         # 共享骨架（传输/落盘/SSRF/错误提示表/PNG 元数据/并发闸）
+│   ├── _prompt_variants.py      # 变体展开引擎（{a|b|c} 枚举 + 词库 + 非重复抽样）
+│   ├── agnes.py                 # agnes 云图像生成（t2i/ti2i + ref-role/变体/元数据）
+│   ├── kolors.py                # kolors 云图像生成（仅 t2i + 变体/元数据）
+│   ├── boogu.py                 # boogu 本地生成（2×2×2 矩阵 + --sweep + --ref）
+│   ├── vision.py                # 图像理解（OCR 对齐官方参数 + grounding 清洗 + --raw）
 │   ├── video.py                 # 视频生成（异步轮询 + 分类重试 + --resume）
-│   └── test_*.py                # 6 个单元测试文件
+│   ├── assets.py                # 角色/画风资产库（add/list/show/remove + --from-last）
+│   ├── doctor.py                # 就绪自检（key/boogu 栈/能力×provider 矩阵/路由结论）
+│   └── test_*.py                # 单元测试（10 个文件，365+ 用例）
 ├── references/
-│   ├── prompt-template.md       # 结构化 prompt 模板 + 示例 + JSON 结构块
+│   ├── prompt-template.md       # 结构化 prompt 模板 + ref-role/变体语法 + JSON 结构块
 │   ├── video-prompt-guide.md    # 视频提示词指南（5 段式/运镜库/多镜头规划）
-│   └── boogu-guide.md           # boogu 路由/模型矩阵/默认参数/下载指引
+│   ├── character-sheet-workflow.md  # 定妆照→场景静帧→图生视频 三段一致性管线
+│   ├── boogu-guide.md           # boogu 路由/模型矩阵/默认参数/seed 边界/下载指引
+│   └── wordbanks/               # 变体词库（lighting/mood，自建可扩充）
 └── agnes-output|boogu-output|kolors-output|video-output/   # 各能力默认输出目录（$PWD）
 ```
 
@@ -134,4 +151,4 @@ wudaozi/
 ## 📄 License 与归属
 
 - License：MIT
-- 仓库：<https://github.com/Kirky-X/wudaozi>（作者 Kirky-X；版本 v0.3.1，skill.json 与 git tag 一致）
+- 仓库：<https://github.com/Kirky-X/wudaozi>（作者 Kirky-X；版本 v0.3.2，skill.json 与 git tag 一致）

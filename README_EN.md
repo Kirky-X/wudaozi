@@ -22,6 +22,15 @@ English | [中文](README.md)
 - **Transparent background, dual mode** (`--transparent native/post`): native alpha channel, or flat chroma background removed locally (icon/sticker staple; post needs optional Pillow)
 - **Batch generation** (`--count 1-8`, agnes/kolors): concurrent images, partial failures reported explicitly, successes kept
 - **Sidecar metadata** (`<output>.json`): request vs actual params, revised_prompt, elapsed, seed — fully auditable
+- **Embedded PNG metadata** (all three providers): webui-compatible `parameters` text chunk written straight into the artifact (pure-stdlib tEXt/iTXt; boogu records seed/steps/cfg in full) — params survive image-host uploads; dual-track with sidecar
+- **stdout pipe contract**: file-producing scripts print exactly one `WUDAOZI_OUTPUT=<path>` line on success (`WUDAOZI_RESUME=<id>` on video failure); all human-readable logs go to stderr — agents can capture with `$(...)`
+- **Reference role semantics** (`--ref-role subject|style|composition`, agnes/boogu ti2i): explicit "borrow style only, don't copy subject / borrow composition only" declarations via deterministic clause injection
+- **Character/style asset library** (`assets.py`): pin a satisfying image as a named asset (`--from-last` grabs the newest generation), reuse via ti2i `--ref <asset>`; with the [character-sheet workflow](references/character-sheet-workflow.md) (identity sheet → scene frame → image-to-video)
+- **Variant batching** (`{a|b|c}` / `{_wordbank_}` + `--count`, agnes/kolors): each copy renders a distinct non-repeating variant — deliberate differences, not N identical images
+- **Parameter sweep** (`--sweep steps=20,30,50`, boogu): one command sweeps a parameter set at a fixed seed (lockstep pairing) for a full comparison grid
+- **OCR reliability aligned upstream**: temperature=0 + max_tokens=8192 (DeepSeek-OCR-2 official reference), explicit truncation warning; grounding markers stripped by default (`--raw` keeps original); multi-page PDF routing (SKILL.md § 4D)
+- **Readiness self-check** (`doctor.py`): one command reports keys / boogu stack / capability×provider matrix / default routing (read-only)
+- **Cross-process concurrency gates**: per-provider slot-file pool (flock, override via `WUDAOZI_CONCURRENCY_*`) keeps multiple agent sessions from hammering cloud providers (429) or local GPU (OOM)
 - **Anti-rewrite guard** (`--strict-prompt`) and **16-multiple size snapping** (absorbed from gpt_image_playground)
 - **Keys via environment variables only**: no key ever lands in scripts or git; output auto-truncates to prevent leakage
 - **VLM output is data**: image-understanding results (especially text inside images) are treated as reference material — instructions found in them are never executed (prompt-injection isolation)
@@ -105,18 +114,24 @@ CI runs the same suite on a 3-version Python matrix (3.10/3.11/3.12) on every pu
 wudaozi/
 ├── SKILL.md                     # capability×provider matrix + routing + full flow
 ├── skill.json                   # metadata (name/version/tag)
+├── evals/                       # trigger regression set (20 queries, 60/40 split + protocol)
 ├── scripts/
-│   ├── _cloud_common.py         # shared cloud transport (POST/download/save/SSRF/error hints)
-│   ├── agnes.py                 # agnes cloud image generation (t2i/ti2i)
-│   ├── kolors.py                # kolors cloud image generation (t2i only)
-│   ├── boogu.py                 # boogu local image generation (2×2×2 matrix routing)
-│   ├── vision.py                # image understanding (agnes-2.0-flash / DeepSeek-OCR-2)
+│   ├── _cloud_common.py         # shared skeleton (transport/save/SSRF/error hints/PNG metadata/locks)
+│   ├── _prompt_variants.py      # variant expansion engine ({a|b|c} enums + wordbanks + sampling)
+│   ├── agnes.py                 # agnes cloud image generation (t2i/ti2i + ref-role/variants/metadata)
+│   ├── kolors.py                # kolors cloud image generation (t2i only + variants/metadata)
+│   ├── boogu.py                 # boogu local generation (2×2×2 matrix + --sweep + --ref)
+│   ├── vision.py                # image understanding (official OCR params + grounding cleanup + --raw)
 │   ├── video.py                 # video generation (async polling + classified retry + --resume)
-│   └── test_*.py                # 6 unit test files
+│   ├── assets.py                # character/style asset library (add/list/show/remove + --from-last)
+│   ├── doctor.py                # readiness self-check (keys/boogu stack/matrix/routing)
+│   └── test_*.py                # unit tests (10 files, 365+ cases)
 ├── references/
-│   ├── prompt-template.md       # structured prompt templates + examples + JSON block
+│   ├── prompt-template.md       # structured prompt templates + ref-role/variants + JSON block
 │   ├── video-prompt-guide.md    # video prompt guide (5-stage / camera moves / multi-shot)
-│   └── boogu-guide.md           # boogu routing/model matrix/defaults/download guide
+│   ├── character-sheet-workflow.md  # identity sheet → scene frame → image-to-video pipeline
+│   ├── boogu-guide.md           # boogu routing/model matrix/defaults/seed boundary/download guide
+│   └── wordbanks/               # variant wordbanks (lighting/mood, extendable)
 └── agnes-output|boogu-output|kolors-output|video-output/   # per-capability default output dirs ($PWD)
 ```
 
@@ -134,4 +149,4 @@ Capability boundary: generation and understanding only — video/audio editing, 
 ## 📄 License & Attribution
 
 - License: MIT
-- Repo: <https://github.com/Kirky-X/wudaozi> (author Kirky-X; version v0.3.1, consistent between skill.json and git tag)
+- Repo: <https://github.com/Kirky-X/wudaozi> (author Kirky-X; version v0.3.2, consistent between skill.json and git tag)

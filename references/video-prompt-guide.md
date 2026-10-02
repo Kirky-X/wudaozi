@@ -42,9 +42,11 @@ Scene: 红色荒漠星球地表，远处废弃飞船残骸，昏黄尘暴
 
 ```
 Atmosphere: 夕阳低角度暖光，尘暴弥漫，孤独压抑
-Camera: 35mm 胶片质感，手持轻微晃动，2.39:1 宽画幅
-Quality: cinematic realism, 8K, high dynamic range
+Camera: 35mm 胶片质感，手持轻微晃动，2.39:1 宽画幅感
+Quality: cinematic realism, high dynamic range, fine film grain
 ```
+
+> **纪律：参数不入 instruction**。分辨率/画幅/时长/帧率是运行参数，只走 CLI flags（`--aspect` / `--duration` / `--num-frames`）；写进指令不会被解析，还会与 flags 打架（指令写 "8K" 而实际输出 1152x768，落差全由用户承担）。画质**氛围词**（cinematic realism / high dynamic range）属于描述，可以写。
 
 ### Stage 4 · Camera Rules（镜头规则，三行）
 
@@ -75,7 +77,7 @@ Clothing: 白色舱内服，橙色臂章，银色胸牌编号 AX-07
 Scene: 红色荒漠星球地表，远处废弃飞船残骸，昏黄尘暴
 Atmosphere: 夕阳低角度暖光，尘暴弥漫，孤独压抑
 Camera: 35mm 胶片质感，手持轻微晃动
-Quality: cinematic realism, 8K, high dynamic range
+Quality: cinematic realism, high dynamic range, fine film grain
 镜头运动: 缓慢推进，主体始终居中
 禁止事项: 不切换镜头，不出现文字/水印
 一致性: 人物面部与服装全程不变
@@ -83,6 +85,8 @@ Quality: cinematic realism, 8K, high dynamic range
 3-5s: 抬头望向残骸，风掀起尘土
 5-8s: 起身走向残骸，镜头跟随，渐远收尾
 ```
+
+（执行命令里配 `--aspect 16:9 --duration 10s`——分辨率与时长走 flags，不进上面的 instruction。）
 
 ---
 
@@ -161,3 +165,10 @@ Frame 1 → Frame 2: #1 向画左行走三步，镜头同步左移（pan left）
 - [ ] multi/keyframes：主体注册表 + 氛围锁 + 帧间运动方向，三件套齐全？
 - [ ] 短需求没有过度工程化？（单镜头简单需求走 6 元素快速路径即可）
 - [ ] 身份识别点具体到可核对（疤痕/胸牌编号/发色），而非"美丽/帅气"类笼统词？
+- [ ] 参数不入 instruction？（时长/画幅/分辨率/帧率全部走 CLI flags，指令里没有 "8K"/"18 秒" 类硬参数声明）
+
+### 写后自检（生成前最后 30 秒）
+
+- [ ] 通读一遍最终 instruction：每个名词都能在 Stage 2 找到定义？出现即删或回填锚定。
+- [ ] 参数类词汇（分辨率/时长/帧率/模型名）已全部路由到 CLI flags？
+- [ ] 质量失败预留迭代位：先 3s 短视频验证动作，失败按 SKILL.md Failure Modes 的视频 prompt 侧分支**单变量**修法改写（一次只改一段/一个镜头），不整段重写。

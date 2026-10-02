@@ -1,0 +1,171 @@
+{
+  "meta": {
+    "name": "wudaozi",
+    "version": "0.3.2",
+    "method": "结构吸收自 anthropics/skills skill-creator 的 Description Optimization（20 查询 / 60-40 train-test 切分 / 3 次投票择优）；本文件是查询集与期望标签，评审协议见 evals/README.md",
+    "updated": "2026-10-02",
+    "notation": "expected: trigger=应触发本技能 / not=不应触发；category 用于切分与统计"
+  },
+  "queries": [
+    {
+      "id": "t01",
+      "split": "train",
+      "category": "t2i",
+      "query": "帮我画一只在月光下的橘猫，电影感",
+      "expected": "trigger",
+      "note": "核心文生图"
+    },
+    {
+      "id": "t02",
+      "split": "train",
+      "category": "t2i",
+      "query": "生成一张 9:16 的手机壁纸，极光雪山",
+      "expected": "trigger",
+      "note": "--aspect 路由"
+    },
+    {
+      "id": "t03",
+      "split": "train",
+      "category": "t2i",
+      "query": "用 boogu 本地出一张图，quick 先看个大概",
+      "expected": "trigger",
+      "note": "boogu+turbo 关键词"
+    },
+    {
+      "id": "t04",
+      "split": "train",
+      "category": "ti2i",
+      "query": "把这张照片的背景换成沙滩",
+      "expected": "trigger",
+      "note": "ti2i 核心触发"
+    },
+    {
+      "id": "t05",
+      "split": "train",
+      "category": "ti2i",
+      "query": "借这张海报的构图，主体换成我们的耳机产品",
+      "expected": "trigger",
+      "note": "--ref-role composition 场景"
+    },
+    {
+      "id": "t06",
+      "split": "train",
+      "category": "vision",
+      "query": "看下这张截图里有什么问题",
+      "expected": "trigger",
+      "note": "图像理解"
+    },
+    {
+      "id": "t07",
+      "split": "train",
+      "category": "vision",
+      "query": "把这张数学卷子上的题目识别出来并解答",
+      "expected": "trigger",
+      "note": "OCR/解题 → aiping"
+    },
+    {
+      "id": "t08",
+      "split": "train",
+      "category": "video",
+      "query": "生成一段猫在沙滩走路的视频",
+      "expected": "trigger",
+      "note": "t2vid 核心触发"
+    },
+    {
+      "id": "t09",
+      "split": "train",
+      "category": "video",
+      "query": "让这张图动起来，镜头缓缓推进",
+      "expected": "trigger",
+      "note": "ti2vid"
+    },
+    {
+      "id": "t10",
+      "split": "train",
+      "category": "character",
+      "query": "给这个 IP 角色出一张定妆照，然后让它走进赛博朋克街道动起来",
+      "expected": "trigger",
+      "note": "character sheet 三段管线"
+    },
+    {
+      "id": "t11",
+      "split": "train",
+      "category": "t2i",
+      "query": "画一个咖啡品牌 logo，要几何感",
+      "expected": "trigger",
+      "note": "logo 属于 t2i 子任务（品牌规范板才走 brandkit）"
+    },
+    {
+      "id": "t12",
+      "split": "train",
+      "category": "t2i",
+      "query": "批量出 6 张风格不同的头像，一个枚举几种色调",
+      "expected": "trigger",
+      "note": "--count + 变体语法"
+    },
+    {
+      "id": "t13",
+      "split": "test",
+      "category": "vision",
+      "query": "这份扫描版 PDF 转成 markdown",
+      "expected": "trigger",
+      "note": "多页路由：拆页+逐页 OCR（本 skill 编排）"
+    },
+    {
+      "id": "t14",
+      "split": "test",
+      "category": "boundary",
+      "query": "帮我做一套完整的品牌规范板，包括 logo 体系和色板",
+      "expected": "not",
+      "note": "→ brandkit（frontmatter 反向路由已下沉本文件 Don't Trigger 节）"
+    },
+    {
+      "id": "t15",
+      "split": "test",
+      "category": "boundary",
+      "query": "画一个系统架构图，用流程图形式",
+      "expected": "not",
+      "note": "→ cangjie diagram（Excalidraw 示意图，非生成模型强项）"
+    },
+    {
+      "id": "t16",
+      "split": "test",
+      "category": "boundary",
+      "query": "审查一下这个页面的 UI 设计有什么可用性问题",
+      "expected": "not",
+      "note": "→ diting review pr / maliang critique"
+    },
+    {
+      "id": "t17",
+      "split": "test",
+      "category": "boundary",
+      "query": "从这个 UI 截图模板库里选一个适合落地页的风格",
+      "expected": "not",
+      "note": "→ gpt-image-2-style-library（选模板/风格，非生成执行）"
+    },
+    {
+      "id": "t18",
+      "split": "test",
+      "category": "boundary",
+      "query": "把这段视频剪掉前 3 秒并加字幕",
+      "expected": "not",
+      "note": "视频编辑超出能力边界（只生成不剪辑）"
+    },
+    {
+      "id": "t19",
+      "split": "test",
+      "category": "boundary",
+      "query": "把这张照片里的人物抠出来换成透明背景 PNG",
+      "expected": "not",
+      "note": "抠图/精修属图像处理工具，非生成模型（--transparent 只在生成时生效）"
+    },
+    {
+      "id": "t20",
+      "split": "test",
+      "category": "boundary",
+      "query": "生成一段 3D 房间模型的 FBX 文件",
+      "expected": "not",
+      "note": "3D 模型超能力边界"
+    }
+  ]
+}

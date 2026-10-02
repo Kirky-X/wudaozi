@@ -78,6 +78,14 @@ flowchart TD
 | Use CFG | Yes | No (DMD student inference) |
 | Relative speed | 1× | ~10× |
 
+> **Seed 复现边界**：`--seed` 只保证**同机、同软件环境、同模型档位**下可复现——RNG 后端随 CUDA 版本/驱动/diffusers 版本变化，跨机器或跨环境同 seed 出图不承诺一致（diffusion 采样无跨环境数值稳定性承诺）。跨会话对比参数请同机同环境跑；本地引擎已是三家 provider 里唯一可完整复现的（云端 agnes/kolors 无 seed 概念）。产物 PNG 已内嵌全量生效参数（seed/steps/cfg/量化档，webui 兼容 `parameters` chunk），对比图互可追溯。
+
+> **sd-cli 引擎路线实测**：stable-diffusion.cpp（pin 3f8527a）已在本机完成 Boogu-Image fp8 实机评估——10B @1024²/50 步 183.7s、峰值显存 13.8GB、`--rng` 显式 webui/comfyui 语义、`--max-vram`/`--vae-tiling` 显存治理、`-M vid_gen` 本地视频。可行性成立，**替换/并存决策待定**；完整数据与待定项见仓库根 [`EVAL-sd-cpp-2026-10-02.md`](../EVAL-sd-cpp-2026-10-02.md)。
+
+**Parameter sweep**（本地专属）：`--sweep steps=20,30,50 text-guidance=4.0,3.5,3.0`——同 seed 一次扫一组参数（lockstep 等长配对，单值广播；**非笛卡尔积**），一命令出整组对比图，每轮带 `[SWEEP] run i/n` stderr 标记，单轮失败不中断其余轮次（退出码非 0）。
+
+**Asset references**（本地专属）：`--ref <asset>` 引用 `assets.py` 角色/画风资产（style 资产默认 `--ref-role style`）；`--ref-role subject|style|composition` 显式声明参考图角色语义。官方脚本单图输入，多张仅取第一张（多参考图走 agnes）。
+
 Video duration presets (num_frames, frame_rate, all 8n+1): `3s`=(81,24) · `5s`=(121,24) · `10s`=(241,24) · `18s`=(441,24).
 Video resolution presets (W,H): `16:9`=(1152,768) · `9:16`=(768,1152) · `1:1`=(960,960) · `4:3`=(1024,768) · `3:4`=(768,1024).
 
