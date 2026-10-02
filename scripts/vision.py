@@ -21,12 +21,31 @@
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 
 import _cloud_common as _cc
 
 TIMEOUT = 180  # VLM 推理比图像生成慢（复杂 OCR/解题可达 90s+），给足余量
+
+# 解码参数对齐官方参考实现（deepseek-ai/DeepSeek-OCR-2 run_dpsk_ocr2_image.py:
+# temperature=0.0 + max_tokens=8192）。OCR 是确定性抽取任务，随机采样会造成
+# 同图不同答；1024 会静默截断长文档的 markdown。
+# ✅ 网关透传已实测（2026-10-02，aiping）：temperature 真实生效——0 两次输出完全
+# 一致；5.0 产生高温乱码（字段透传到模型，网关不做上限校验）；官方 prompt
+# "<image>\nFree OCR." 经 chat/completions 直接可用；finish_reason 正常返回。
+DEFAULT_MAX_TOKENS = 8192
+DEFAULT_TEMPERATURE = 0.0
+
+# DeepSeek-OCR-2 grounding 输出的结构标记（与官方后处理同源）：
+# `<|grounding|>` 前缀 + `<|ref|>区域标签<|det|>[[x1,y1,x2,y2]]|>` 区域块。
+# 默认剥离结构标记、保留区域标签文本；--raw 保留原文。
+GROUNDING_RE = re.compile(r"<\|grounding\|>|<\|ref\|>(.*?)<\|det\|>\s*\[\[[^\]]*\]\]\|?>")
+# 官方后处理同样归一的常见 LaTeX 宏（保守白名单，按需扩充）
+LATEX_MAP = {
+    r"\coloneqq": ":=",
+}
 
 # 确定性查找表：provider → endpoint/model/key 环境变量
 PROVIDERS = {
@@ -61,11 +80,14 @@ def resolve_image_input(path: str) -> str:
     return image_to_data_uri(path)
 
 
-def build_body(provider: str, image_input: str, question: str, max_tokens: int) -> dict:
-    """组装 chat/completions 请求体（OpenAI 兼容 content array）。"""
+def build_body(provider: str, image_input: str, question: str, max_tokens: int, temperature: float = DEFAULT_TEMPERATURE) -> dict:
+    """组装 chat/completions 请求体（OpenAI 兼容 content array）。
+    temperature=0 对齐官方 OCR 参考实现（确定性抽取，禁随机采样）；
+    透传已实测生效（2026-10-02，见模块注释）。"""
     return {
         "model": PROVIDERS[provider]["model"],
         "max_tokens": max_tokens,
+        "temperature": temperature,
         "messages": [
             {
                 "role": "user",
@@ -95,6 +117,28 @@ def extract_content(resp: dict) -> str:
     if not content:
         _cc.fail("malformed_response", f"响应无 content: {resp}")
     return content
+
+
+def warn_truncated(resp: dict) -> None:
+    """finish_reason=='length' → 显式告警。截断不可静默：OCR 长文档被
+    max_tokens 掐断时用户拿到的"完整 markdown"缺尾（规则11）。"""
+    choices = resp.get("choices") or [{}]
+    if choices[0].get("finish_reason") == "length":
+        print(
+            f"[WARN] 响应因 max_tokens 截断（finish_reason=length），结果可能不完整"
+            f"  → 提高 --max-tokens 后重试",
+            file=sys.stderr,
+        )
+
+
+def clean_grounding(content: str) -> tuple:
+    """剥离 grounding 结构标记（保留 <|ref|> 内的区域标签文本）+ 常见 LaTeX 宏归一。
+    返回 (清洗后文本, 是否有改动)。grounding 坐标是 999 归一化值，剥离后文本
+    才可直接消费；需要坐标/裁剪的下游走 --raw 拿原文。"""
+    cleaned = GROUNDING_RE.sub(lambda m: m.group(1) or "", content)
+    for src, dst in LATEX_MAP.items():
+        cleaned = cleaned.replace(src, dst)
+    return cleaned, cleaned != content
 
 
 def to_curl(provider: str, body: dict, api_key: str) -> str:
@@ -141,8 +185,20 @@ provider 选择：
     p.add_argument(
         "--max-tokens",
         type=int,
-        default=1024,
-        help="响应最大 token 数（默认 1024）",
+        default=DEFAULT_MAX_TOKENS,
+        help=f"响应最大 token 数（默认 {DEFAULT_MAX_TOKENS}，对齐官方 OCR 参考实现；"
+        f"低于文档需求会被静默截断——有 finish=length 告警）",
+    )
+    p.add_argument(
+        "--temperature",
+        type=float,
+        default=DEFAULT_TEMPERATURE,
+        help="采样温度（默认 0.0 对齐官方 OCR 参考实现；OCR/抽取任务禁随机采样）",
+    )
+    p.add_argument(
+        "--raw",
+        action="store_true",
+        help="保留模型原文（默认剥离 DeepSeek-OCR-2 grounding 结构标记与坐标块）",
     )
     p.add_argument(
         "--output", "-o", default=None, help="结果存到 txt（默认只打印 stdout）"
@@ -164,7 +220,7 @@ def main() -> int:
         )
 
     image_input = resolve_image_input(a.image)
-    body = build_body(a.provider, image_input, a.question, a.max_tokens)
+    body = build_body(a.provider, image_input, a.question, a.max_tokens, a.temperature)
 
     print(f"[INFO] provider={a.provider} model={cfg['model']}", file=sys.stderr)
     print(f"[CMD] {to_curl(a.provider, body, api_key)}", file=sys.stderr)
@@ -175,6 +231,14 @@ def main() -> int:
 
     resp = call_api(a.provider, body, api_key)
     content = extract_content(resp)
+    warn_truncated(resp)
+    if a.raw:
+        print("[INFO] --raw：保留模型原文", file=sys.stderr)
+    else:
+        cleaned, changed = clean_grounding(content)
+        if changed:
+            print("[INFO] 已剥离 grounding 结构标记（--raw 保留原文）", file=sys.stderr)
+        content = cleaned
 
     print(f"[RESULT] {a.provider} 图像理解结果：", file=sys.stderr)
     print(content)  # 正文打 stdout，便于 agent 管道读取
@@ -213,11 +277,16 @@ if __name__ == "__main__":
     body = build_body("agnes", "data:image/png;base64,AAA", "看图", 512)
     assert body["model"] == "agnes-2.0-flash"
     assert body["max_tokens"] == 512
+    assert body["temperature"] == 0.0, "OCR 默认禁随机采样（官方参考实现）"
+    assert build_body("agnes", "x", "看图", 100, 0.7)["temperature"] == 0.7
     parts = body["messages"][0]["content"]
     assert parts[0]["type"] == "image_url"
     assert parts[1]["text"] == "看图"
-    # extract_content
+    # extract_content / 截断告警 / grounding 清洗
     assert extract_content({"choices": [{"message": {"content": "hello"}}]}) == "hello"
+    assert clean_grounding("<|grounding|>标题<|ref|>img<|det|>[[1,2,3,4]]|>正文") == ("标题img正文", True)
+    assert clean_grounding("普通文本")[1] is False
+    assert clean_grounding(r"公式 $a \coloneqq b$")[0] == r"公式 $a := b$"
     print(f"  provider 数: {len(PROVIDERS)}（agnes + aiping）")
     for name, cfg in PROVIDERS.items():
         print(f"  {name}: {cfg['model']}（{cfg['key_env']}）")

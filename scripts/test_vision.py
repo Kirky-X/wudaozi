@@ -229,3 +229,70 @@ class TestProviders:
         assert set(vision.PROVIDERS) == {"agnes", "aiping"}
         assert vision.PROVIDERS["agnes"]["model"] == "agnes-2.0-flash"
         assert vision.PROVIDERS["aiping"]["model"] == "DeepSeek-OCR-2"
+
+
+# ---------- OCR 可靠性（调研 R2：temperature=0 + max_tokens 8192 + 截断告警） ----------
+class TestOcrReliability:
+    def test_default_temperature_zero(self):
+        body = vision.build_body("aiping", "data:image/png;base64,AAA", "转写", 8192)
+        assert body["temperature"] == 0.0, "OCR 是确定性抽取，默认禁随机采样（官方参考实现）"
+
+    def test_explicit_temperature_passthrough(self):
+        body = vision.build_body("agnes", "x", "描述", 1024, 0.7)
+        assert body["temperature"] == 0.7
+
+    def test_default_max_tokens_8192(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["vision.py", "aiping", "--image", "x.png", "-q", "转写"])
+        assert vision.parse_args().max_tokens == vision.DEFAULT_MAX_TOKENS == 8192
+
+    def test_temperature_flag(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv", ["vision.py", "aiping", "--image", "x.png", "-q", "转写", "--temperature", "0.3"]
+        )
+        assert vision.parse_args().temperature == 0.3
+
+
+class TestWarnTruncated:
+    def test_length_finish_reason_warns(self, capsys):
+        vision.warn_truncated({"choices": [{"finish_reason": "length", "message": {"content": "x"}}]})
+        assert "截断" in capsys.readouterr().err
+
+    def test_stop_finish_reason_silent(self, capsys):
+        vision.warn_truncated({"choices": [{"finish_reason": "stop", "message": {"content": "x"}}]})
+        assert capsys.readouterr().err == ""
+
+    def test_missing_choices_no_crash(self, capsys):
+        vision.warn_truncated({})
+        assert capsys.readouterr().err == ""
+
+
+# ---------- grounding 标记清洗（调研 R10） ----------
+class TestCleanGrounding:
+    def test_full_grounding_block_stripped(self):
+        raw = "<|grounding|>文档标题<|ref|>img<|det|>[[0.1,0.2,0.8,0.9]]|>正文内容"
+        cleaned, changed = vision.clean_grounding(raw)
+        assert changed
+        assert cleaned == "文档标题img正文内容", "结构标记与坐标块剥离，区域标签文本保留"
+
+    def test_plain_text_untouched(self):
+        cleaned, changed = vision.clean_grounding("普通 OCR 输出，没有任何标记")
+        assert cleaned == "普通 OCR 输出，没有任何标记" and changed is False
+
+    def test_latex_coloneqq_normalized(self):
+        cleaned, changed = vision.clean_grounding(r"$a \coloneqq b$")
+        assert cleaned == r"$a := b$" and changed
+
+    def test_multiline_document(self):
+        raw = "<|ref|>第1页<|det|>[[1,2,3,4]]|>第一页文字\n<|ref|>第2页<|det|>[[5,6,7,8]]|>第二页文字"
+        cleaned, changed = vision.clean_grounding(raw)
+        assert cleaned == "第1页第一页文字\n第2页第二页文字" and changed
+
+    def test_raw_flag_cli(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv", ["vision.py", "aiping", "--image", "x.png", "-q", "转写", "--raw"]
+        )
+        assert vision.parse_args().raw is True
+
+    def test_raw_default_off(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["vision.py", "aiping", "--image", "x.png", "-q", "转写"])
+        assert vision.parse_args().raw is False
