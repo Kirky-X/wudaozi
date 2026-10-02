@@ -25,6 +25,9 @@ import time
 import uuid
 from pathlib import Path
 
+import _cloud_common as _cc
+import assets as _assets
+
 # ============================================================================
 # Resource Location
 # ============================================================================
@@ -59,6 +62,13 @@ TURBO_TI2I_SIGMA = 0.0
 DEFAULT_NEGATIVE = (
     "模糊, 低品质, 变形, 多余的手指, 透视错误, 水印, 文字, 签名, 过曝, JPEG 伪影"
 )
+
+# 生效默认值单一来源（build_args 与 PNG 元数据共用，防两处漂移）
+TURBO_STEPS, BASE_STEPS = 4, 50
+TURBO_CFG, BASE_CFG = 1.0, 4.0
+
+# --sweep 支持的参数（名称即 CLI 参数名，值为解析器）——lockstep 配对扫描
+SWEEP_PARAMS = {"steps": int, "text-guidance": float, "dmd-sigma": float}
 
 # ============================================================================
 # Aspect Ratio Presets — all aligned to 16 multiples, longest side ≤ 2048 (model native 2K limit)
@@ -187,12 +197,12 @@ def build_args(a: argparse.Namespace, height: int, width: int, out_path: Path) -
     if a.mode == "ti2i":
         args += ["--input_image_paths", str(a.input)]
 
-    # Steps and CFG: key difference between turbo vs base
+    # Steps and CFG: key difference between turbo vs base（默认值单一来源：模块顶部常量）
     if a.turbo:
         if a.steps is None:
-            args += ["--num_inference_steps", "4"]
+            args += ["--num_inference_steps", str(TURBO_STEPS)]
         if a.text_guidance is None:
-            args += ["--text_guidance_scale", "1.0"]
+            args += ["--text_guidance_scale", str(TURBO_CFG)]
         args += ["--image_guidance_scale", "1.0"]
         sigma = TURBO_TI2I_SIGMA if a.mode == "ti2i" else TURBO_T2I_SIGMA
         args += [
@@ -202,10 +212,10 @@ def build_args(a: argparse.Namespace, height: int, width: int, out_path: Path) -
         if a.mode == "ti2i":
             args += ["--empty_instruction_guidance_scale", "0.0"]
     else:
-        args += ["--num_inference_steps", str(a.steps if a.steps is not None else 50)]
+        args += ["--num_inference_steps", str(a.steps if a.steps is not None else BASE_STEPS)]
         args += [
             "--text_guidance_scale",
-            str(a.text_guidance if a.text_guidance is not None else 4.0),
+            str(a.text_guidance if a.text_guidance is not None else BASE_CFG),
         ]
         if a.mode == "ti2i":
             args += ["--image_guidance_scale", "1.0"]
@@ -248,7 +258,8 @@ def resolve_output(a: argparse.Namespace, height: int, width: int) -> Path:
 # ============================================================================
 def validate_args(a: argparse.Namespace) -> None:
     """Validate parameter semantic hard constraints (turbo DMD inference rules, etc.), exit on violation."""
-    if a.mode == "ti2i" and not a.input:
+    if a.mode == "ti2i" and not a.input and not getattr(a, "ref", None):
+        # --ref 资产引用由 main() 解析后再回填 a.input，此处只要求二者有其一
         sys.exit("[ERROR] Image-to-image (ti2i) requires --input reference image path")
     if not (30 <= len(a.instruction) <= 400):
         print(
@@ -267,6 +278,56 @@ def validate_args(a: argparse.Namespace) -> None:
                 f"[WARN] turbo is 4-step DMD distillation, current steps={a.steps} may diverge",
                 file=sys.stderr,
             )
+
+
+def parse_sweep(specs: list) -> dict:
+    """--sweep 规格（``steps=20,30,50``）→ {CLI 参数名: [取值...]}。
+
+    lockstep 语义：>1 长度的列表必须等长（第 i 轮跑各列表第 i 个值，非笛卡尔
+    积——笛卡尔积会把组合数乘爆）；单值列表广播到总轮数。非法规格显性退出。
+    """
+    out = {}
+    for spec in specs:
+        name, sep, raw = spec.partition("=")
+        name = name.strip()
+        if not sep or name not in SWEEP_PARAMS:
+            sys.exit(
+                f"[ERROR] --sweep 规格须为 <参数>=v1,v2,...（可选参数: {', '.join(sorted(SWEEP_PARAMS))}）: {spec!r}"
+            )
+        try:
+            values = [SWEEP_PARAMS[name](v.strip()) for v in raw.split(",") if v.strip()]
+        except ValueError:
+            sys.exit(f"[ERROR] --sweep {name} 取值解析失败: {raw!r}")
+        if not values:
+            sys.exit(f"[ERROR] --sweep {name} 取值列表为空: {spec!r}")
+        out[name] = values
+    # 只有 >1 长度的列表之间要求等长（lockstep 配对）；单值广播到总轮数
+    multi_lengths = {len(v) for v in out.values() if len(v) > 1}
+    if len(multi_lengths) > 1:
+        detail = ", ".join(f"{k}={len(v)}" for k, v in out.items())
+        sys.exit(f"[ERROR] --sweep 各参数列表必须等长（lockstep 配对，非笛卡尔积）: {detail}")
+    n = multi_lengths.pop() if multi_lengths else 1
+    return {k: (v * n if len(v) == 1 else v) for k, v in out.items()}
+
+
+def effective_params(a: argparse.Namespace, width: int, height: int) -> tuple:
+    """真实生效参数（与 build_args 同一 fallback 逻辑），供 PNG 元数据/审计。
+    返回 (params 字典, 负向提示或 None)。"""
+    steps = a.steps if a.steps is not None else (TURBO_STEPS if a.turbo else BASE_STEPS)
+    cfg = a.text_guidance if a.text_guidance is not None else (TURBO_CFG if a.turbo else BASE_CFG)
+    negative = DEFAULT_NEGATIVE if a.negative_instruction is None else (a.negative_instruction.strip() or None)
+    params = {
+        "provider": "boogu",
+        "model": MATRIX[(a.mode, a.turbo, a.quantized)],
+        "mode": a.mode,
+        "size": f"{width}x{height}",
+        "seed": a.seed,
+        "steps": steps,
+        "text_guidance": cfg,
+        "turbo": a.turbo,
+        "quantized": a.quantized,
+    }
+    return params, negative
 
 
 # ============================================================================
@@ -356,22 +417,32 @@ Aspect ratio presets: """
         "--device", default="cuda:0", help="Device (default cuda:0; try cpu if no GPU)"
     )
     p.add_argument(
+        "--ref", nargs="+", default=None, metavar="ASSET",
+        help="ti2i 引用资产库参考图（assets.py add 创建；style 资产默认 --ref-role style；"
+        "官方脚本单图输入，多张仅取第一张）",
+    )
+    p.add_argument(
+        "--ref-role",
+        choices=sorted(_cc.REF_ROLE_CLAUSES),
+        default=None,
+        help="ti2i 参考图角色语义（默认 subject；--ref 引用 style 资产时默认 style）: "
+        "subject=参考图即主体 / style=只借画风勿抄主体 / composition=只借构图与机角勿抄主体",
+    )
+    p.add_argument(
+        "--sweep", nargs="+", default=None, metavar="PARAM=v1,v2",
+        help="参数扫描（lockstep 等长配对，同 seed 对比）: "
+        "steps=20,30,50 text-guidance=4.0,3.5,3.0（可选参数: " + "/".join(sorted(SWEEP_PARAMS)) + "）",
+    )
+    p.add_argument(
         "--output-dir", "-o", default=None, help="Output directory (default $PWD/boogu-output/)"
     )
     p.add_argument("--dry-run", action="store_true", help="Only print command, don't execute")
     return p.parse_args()
 
 
-def main() -> int:
-    a = parse_args()
-    validate_args(a)  # ti2i required + turbo hard constraints (B11/B12)
-
-    if a.seed is None:
-        a.seed = gen_seed()
-        print(
-            f"[INFO] --seed not specified, generated seed={a.seed} (add --seed {a.seed} to reproduce)",
-            file=sys.stderr,
-        )
+def _run_once(a: argparse.Namespace) -> int:
+    """单次生成（--sweep 的每个取值各跑一轮）。返回进程退出码。"""
+    validate_args(a)
 
     height, width = resolve_size(a)
     out_path = resolve_output(a, height, width)
@@ -407,7 +478,9 @@ def main() -> int:
         return 0
 
     try:
-        result = subprocess.run(cmd, cwd=str(BOOGU_DIR), env=env)
+        # 跨进程并发闸：本地 GPU 默认 1 槽，多 agent 会话并行推理必 OOM——排队而非撞车
+        with _cc.provider_slot("boogu"):
+            result = subprocess.run(cmd, cwd=str(BOOGU_DIR), env=env)
     except KeyboardInterrupt:
         out_path.unlink(missing_ok=True)
         print("[CANCEL] User interrupted, cleaned up partial output", file=sys.stderr)
@@ -426,10 +499,78 @@ def main() -> int:
             file=sys.stderr,
         )
         return result.returncode or 1
+
+    # PNG 文本 chunk 元数据（webui 兼容 parameters）：本地引擎参数齐全（seed/steps/cfg），
+    # 是三家 provider 里唯一可完整复现的——参数全量入图，--sweep 对比图互可追溯
+    params, negative = effective_params(a, width, height)
+    _cc.embed_png_metadata(out_path, a.instruction, negative, params)
     print(
         f"[OK] Generated: {out_path} ({out_path.stat().st_size // 1024} KB)",
         file=sys.stderr,
     )
+    # stdout 管道契约：产物路径一行走 stdout（$(...) 可捕获），人读信息全在 stderr；
+    # 单次 write 保证批量多线程下行不被其他线程粘连
+    sys.stdout.write(f"WUDAOZI_OUTPUT={out_path}\n")
+    sys.stdout.flush()
+    return 0
+
+
+def main() -> int:
+    a = parse_args()
+    validate_args(a)  # ti2i required + turbo hard constraints (B11/B12), fail fast
+
+    # --ref 资产解析（ti2i）：参考图取自资产库（拷贝入库的副本，防原文件清理失效）
+    if a.ref:
+        if a.mode != "ti2i":
+            sys.exit("[ERROR] --ref 仅支持 ti2i（角色/画风资产）")
+        if a.input:
+            sys.exit("[ERROR] --input 与 --ref 互斥（--ref 直接引用资产库）")
+        kinds = [_assets.load_asset(n)["kind"] for n in a.ref]
+        refs = _assets.resolve_refs(a.ref)
+        if len(refs) > 1:
+            print(
+                "[WARN] boogu 官方脚本单图输入，仅取第一张参考图（多参考图走 agnes）",
+                file=sys.stderr,
+            )
+        a.input = str(refs[0])
+        if a.ref_role is None:
+            a.ref_role = "style" if kinds[0] == "style" else "subject"
+    if a.ref_role is None:
+        a.ref_role = "subject"
+    if a.mode == "ti2i" and a.ref_role != "subject":
+        # 角色子句在 validate 之后追加，不干扰 30-400 字符建议区间告警
+        a.instruction = _cc.apply_ref_role(a.instruction, a.ref_role)
+
+    if a.seed is None:
+        a.seed = gen_seed()
+        print(
+            f"[INFO] --seed not specified, generated seed={a.seed} (add --seed {a.seed} to reproduce)",
+            file=sys.stderr,
+        )
+
+    # --sweep：同 seed 扫一组参数对比（seed 只生成一次，全部轮次共享，保证可比性）
+    sweep = parse_sweep(a.sweep) if a.sweep else {}
+    runs = max((len(v) for v in sweep.values()), default=1)
+
+    results = []
+    for i in range(runs):
+        run_a = a
+        if sweep:
+            run_a = argparse.Namespace(**vars(a))
+            for name, values in sweep.items():
+                setattr(run_a, name.replace("-", "_"), values[i])
+            print(
+                f"[SWEEP] run {i + 1}/{runs}: "
+                + ", ".join(f"{n}={sweep[n][i]}" for n in sorted(sweep)),
+                file=sys.stderr,
+            )
+        results.append(_run_once(run_a))
+
+    if runs > 1:
+        ok = sum(1 for r in results if r == 0)
+        print(f"[SWEEP] {ok}/{runs} 成功", file=sys.stderr)
+    if any(r != 0 for r in results):
+        return 1
     return 0
 
 
@@ -444,6 +585,28 @@ if __name__ == "__main__":
         assert h % 16 == 0 and w % 16 == 0
     assert align16(1365) == 1360
     assert align16(17) == 16
+    # --sweep 解析：lockstep 等长 + 单值广播；非法规格显性退出
+    assert parse_sweep(["steps=20,30,50"]) == {"steps": [20, 30, 50]}
+    assert parse_sweep(["steps=20,30", "text-guidance=4.0"]) == {
+        "steps": [20, 30], "text-guidance": [4.0, 4.0],
+    }
+    for bad in (["steps"], ["foo=1,2"], ["steps=20,30", "text-guidance=4.0,3.5,3.0"], ["steps=x,y"]):
+        try:
+            parse_sweep(bad)
+            raise AssertionError(f"should have exited: {bad}")
+        except SystemExit:
+            pass
+    # 生效参数与 build_args 的 fallback 一致
+    from types import SimpleNamespace as _NS
+
+    p_ns = _NS(mode="t2i", turbo=False, quantized=False, steps=None, text_guidance=None,
+               negative_instruction=None, seed=42, instruction="x")
+    params, neg = effective_params(p_ns, 1024, 1024)
+    assert params["steps"] == BASE_STEPS and params["text_guidance"] == BASE_CFG and params["seed"] == 42
+    assert neg == DEFAULT_NEGATIVE
+    # ref-role 子句
+    assert _cc.apply_ref_role("x", "subject") == "x"
+    assert "composition" in _cc.apply_ref_role("x", "composition")
     print(f"  Matrix combinations: {len(MATRIX)}")
     print(f"  Aspect ratio presets: {len(ASPECT_RATIOS)}, all 16-aligned")
     print(

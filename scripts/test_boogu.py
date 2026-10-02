@@ -224,3 +224,77 @@ class TestMatrix:
     def test_all_presets_align16(self):
         for h, w in boogu.ASPECT_RATIOS.values():
             assert h % 16 == 0 and w % 16 == 0
+
+
+# ---------- --sweep 参数扫描（调研 R16：lockstep 等长配对，非笛卡尔积） ----------
+class TestParseSweep:
+    def test_single_param(self):
+        assert boogu.parse_sweep(["steps=20,30,50"]) == {"steps": [20, 30, 50]}
+
+    def test_lockstep_broadcast_singleton(self):
+        out = boogu.parse_sweep(["steps=20,30", "text-guidance=4.0"])
+        assert out == {"steps": [20, 30], "text-guidance": [4.0, 4.0]}, "单值广播到轮数"
+
+    def test_float_parsing(self):
+        assert boogu.parse_sweep(["text-guidance=4.0,3.5,3.0"]) == {"text-guidance": [4.0, 3.5, 3.0]}
+
+    def test_unequal_lengths_exit(self):
+        with pytest.raises(SystemExit) as e:
+            boogu.parse_sweep(["steps=20,30", "text-guidance=4.0,3.5,3.0"])
+        assert "等长" in str(e.value)
+
+    def test_unknown_param_exits(self):
+        with pytest.raises(SystemExit):
+            boogu.parse_sweep(["foo=1,2"])
+
+    def test_bad_value_exits(self):
+        with pytest.raises(SystemExit):
+            boogu.parse_sweep(["steps=x,y"])
+
+    def test_no_eq_exits(self):
+        with pytest.raises(SystemExit):
+            boogu.parse_sweep(["steps"])
+
+
+# ---------- 生效参数（PNG 元数据用，与 build_args fallback 一致） ----------
+class TestEffectiveParams:
+    def test_base_defaults(self):
+        ns = SimpleNamespace(mode="t2i", turbo=False, quantized=False, steps=None,
+                             text_guidance=None, negative_instruction=None, seed=7,
+                             instruction="x")
+        params, neg = boogu.effective_params(ns, 1024, 1360)
+        assert params["steps"] == boogu.BASE_STEPS and params["text_guidance"] == boogu.BASE_CFG
+        assert params["seed"] == 7 and params["size"] == "1024x1360", "size 与文件名同向(WxH)"
+        assert neg == boogu.DEFAULT_NEGATIVE
+
+    def test_explicit_overrides(self):
+        ns = SimpleNamespace(mode="t2i", turbo=True, quantized=False, steps=6,
+                             text_guidance=1.0, negative_instruction="", seed=7,
+                             instruction="x")
+        params, neg = boogu.effective_params(ns, 1024, 1024)
+        assert params["steps"] == 6 and params["turbo"] is True
+        assert neg is None, "空串负向提示 = 显式禁用，元数据不得记成默认模板"
+
+    def test_constants_single_source(self):
+        # build_args 与 effective_params 的 fallback 必须同源
+        assert boogu.TURBO_STEPS == 4 and boogu.BASE_STEPS == 50
+        assert boogu.TURBO_CFG == 1.0 and boogu.BASE_CFG == 4.0
+
+
+# ---------- 审查修复回归:--ref 不再被 validate_args 拦死 ----------
+class TestRefValidation:
+    def _ns(self, **kw):
+        base = dict(mode="ti2i", input=None, ref=None, instruction="x",
+                    turbo=False, text_guidance=None, steps=None)
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def test_ref_without_input_passes_validate(self):
+        boogu.validate_args(self._ns(ref=["hero"]))
+
+    def test_input_without_ref_passes(self):
+        boogu.validate_args(self._ns(input="a.png"))
+
+    def test_neither_exits(self):
+        with pytest.raises(SystemExit):
+            boogu.validate_args(self._ns())
