@@ -21,12 +21,14 @@
 
 import argparse
 import os
+import random
 import sys
 import time
 import uuid
 from pathlib import Path
 
 import _cloud_common as _cc
+import _prompt_variants as _pv
 
 ENDPOINT = "https://www.aiping.cn/api/v1/images/generations"
 MODEL = "Kolors"
@@ -66,9 +68,10 @@ def resolve_output(a: argparse.Namespace, index: int = 1) -> Path:
     return out_dir / f"kolors_t2i_{ts}_{suffix}{idx}.png"
 
 
-def build_body(a: argparse.Namespace) -> dict:
-    """组装 Kolors 请求体。image_size 可选（不传走服务端默认）。"""
-    body: dict = {"model": MODEL, "prompt": a.instruction}
+def build_body(a: argparse.Namespace, instruction: str | None = None) -> dict:
+    """组装 Kolors 请求体。image_size 可选（不传走服务端默认）。
+    instruction 缺省取 a.instruction（--count>1 变体展开时传每份变体）。"""
+    body: dict = {"model": MODEL, "prompt": instruction if instruction is not None else a.instruction}
     sz = resolve_image_size(a)
     if sz:
         body["image_size"] = sz
@@ -152,27 +155,42 @@ def parse_args() -> argparse.Namespace:
     return a
 
 
-def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
-    """单轮生成（index 用于 count > 1 时的文件名序号），失败抛 SystemExit。"""
+def _generate_once(a: argparse.Namespace, api_key: str, index: int, instruction: str | None = None) -> Path:
+    """单轮生成（index 用于 count > 1 时的文件名序号），失败抛 SystemExit。
+    instruction 缺省取 a.instruction；变体展开时由 main() 传入每份变体。"""
+    instruction = instruction if instruction is not None else a.instruction
     out_path = resolve_output(a, index)
-    body = build_body(a)
+    body = build_body(a, instruction)
     label = f"[{index}/{a.count}] " if a.count > 1 else ""
     print(f"{label}[INFO] 输出={out_path}", file=sys.stderr)
     print(f"{label}[CMD] {to_curl(body, api_key)}", file=sys.stderr)
     try:
-        resp = call_api(body, api_key)
-        save_image(resp, out_path)
+        # 跨进程并发闸（与 agnes 同理：多会话排队，防 429）
+        with _cc.provider_slot("kolors"):
+            resp = call_api(body, api_key)
+            save_image(resp, out_path)
     except SystemExit as e:
         # 失败留痕：kolors 此前连 sidecar 机制都没有，错误路径先落盘再退出（调研建议#1）
         _cc.raise_with_trace(
             e, out_path, "kolors",
-            {"instruction": a.instruction, "image_size": resolve_image_size(a),
+            {"instruction": instruction, "image_size": resolve_image_size(a),
              "count": a.count, "index": index},
         )
+    # PNG 文本 chunk 元数据：kolors 此前零元数据，单发图床后参数即丢——内嵌补齐
+    _cc.embed_png_metadata(
+        out_path, instruction, None,
+        {"provider": "kolors", "model": MODEL, "mode": "t2i",
+         "image_size": resolve_image_size(a) or "server-default",
+         "count": a.count if a.count > 1 else None,
+         "index": index if a.count > 1 else None},
+    )
     print(
         f"{label}[OK] 已生成: {out_path} ({out_path.stat().st_size // 1024} KB)",
         file=sys.stderr,
     )
+    # stdout 管道契约：产物路径一行走 stdout（$(...) 可捕获）；单次 write 防多线程粘连
+    sys.stdout.write(f"WUDAOZI_OUTPUT={out_path}\n")
+    sys.stdout.flush()
     return out_path
 
 
@@ -196,8 +214,14 @@ def main() -> int:
         print("[DRY-RUN] 未执行（无 key / 调试时用）", file=sys.stderr)
         return 0
 
+    # 变体展开：含 {a|b|c} / {_词库_} 语法时每份一份非重复变体；无语法 = 原样 N 份（历史行为）
+    segs = _pv.parse_slots(a.instruction)
+    instructions = _pv.sample_variants(a.instruction, a.count, random.Random(), segments=segs)
+    if _pv.has_variant_syntax(a.instruction):
+        print(f"[INFO] 变体展开: {a.count} 份（组合空间 {_pv.combo_count(segs)}，非重复抽样）", file=sys.stderr)
+
     if a.count == 1:
-        _generate_once(a, api_key, 1)
+        _generate_once(a, api_key, 1, instructions[0])
         return 0
 
     from concurrent.futures import ThreadPoolExecutor
@@ -205,7 +229,10 @@ def main() -> int:
     failures = []
     ok = 0
     with ThreadPoolExecutor(max_workers=min(a.count, BATCH_CONCURRENCY)) as pool:
-        futures = {pool.submit(_generate_once, a, api_key, i + 1): i + 1 for i in range(a.count)}
+        futures = {
+            pool.submit(_generate_once, a, api_key, i + 1, instructions[i]): i + 1
+            for i in range(a.count)
+        }
         for fut in futures:
             try:
                 fut.result()
@@ -237,6 +264,9 @@ if __name__ == "__main__":
     body2 = build_body(SimpleNamespace(instruction="x", aspect="1:1", image_size=None))
     assert body2["image_size"] == "1024x1024"
     assert resolve_output(SimpleNamespace(output_dir=None)).name.startswith("kolors_t2i_")
+    # 变体展开：无语法 = 原样 N 份；有语法 = 非重复
+    assert _pv.sample_variants("普通", 2, random.Random(1)) == ["普通", "普通"]
+    assert len(set(_pv.sample_variants("{红|蓝|绿}", 3, random.Random(5)))) == 3
     print(f"  宽高比预设: {len(IMAGE_SIZES)} 种")
     print(f"  ENDPOINT: {ENDPOINT}")
     print(f"  MODEL: {MODEL}")

@@ -1,0 +1,9 @@
+# 光照词库（自著，每行一个词；供 {_lighting_} 变体引用，配合 --count 出刻意差异的批量图）
+golden hour backlight
+soft overcast daylight
+blue hour sidelight
+dramatic rim lighting
+neon night lighting
+candlelit warm glow
+moonlit cool tones
+studio softbox lighting

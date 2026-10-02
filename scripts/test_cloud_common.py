@@ -458,3 +458,225 @@ class TestReviewFixes:
         import re as _re
         m = _re.search(r"-d (.+)$", s, _re.S)
         assert m and "'cat'" not in m.group(1)[1:-1]  # 不再裸拼单引号包裹
+
+
+# ---------- PNG 元数据内嵌（调研 R3：sidecar-only → PNG 文本 chunk 双轨） ----------
+def _png_bytes(pad: int = 2000) -> bytes:
+    """最小合法 PNG：签名 + IHDR + 填充块（embed 只要求结构，不要求可渲染）。"""
+    import struct
+    import zlib
+
+    ihdr_data = struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)
+    ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr_data))
+    out = b"\x89PNG\r\n\x1a\n" + ihdr
+    if pad:
+        data = b"\x00" * pad
+        out += struct.pack(">I", len(data)) + b"prVt" + data + struct.pack(">I", zlib.crc32(b"prVt" + data))
+    return out
+
+
+def _walk_chunks(raw: bytes):
+    """遍历 PNG chunk：yield (type, data)。"""
+    import struct
+
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+    off = 8
+    while off < len(raw):
+        (length,) = struct.unpack(">I", raw[off:off + 4])
+        ctype = raw[off + 4:off + 8]
+        data = raw[off + 8:off + 8 + length]
+        yield ctype, data
+        off += 12 + length
+
+
+class TestPngMetadata:
+    def test_ascii_prompt_uses_text_chunk(self, tmp_path):
+        p = tmp_path / "a.png"
+        p.write_bytes(_png_bytes())
+        assert cc.embed_png_metadata(p, "a cat, highly detailed", "blurry", {"seed": 42})
+        chunks = list(_walk_chunks(p.read_bytes()))
+        assert chunks[0][0] == b"IHDR", "IHDR 必须仍是首块"
+        assert chunks[1][0] == b"tEXt", "ASCII 场景用 tEXt（webui/sd.cpp 可读）"
+        kw, _, val = chunks[1][1].partition(b"\x00")
+        assert kw == b"parameters"
+        text = val.decode("latin-1")
+        assert text.startswith("a cat, highly detailed")
+        assert "Negative prompt: blurry" in text
+        assert "seed: 42" in text
+
+    def test_chinese_prompt_uses_itxt(self, tmp_path):
+        p = tmp_path / "c.png"
+        p.write_bytes(_png_bytes())
+        assert cc.embed_png_metadata(p, "一只在月光下的橘猫", None, {"provider": "boogu"})
+        chunks = list(_walk_chunks(p.read_bytes()))
+        assert chunks[1][0] == b"iTXt", "中文超出 latin-1，必须走 iTXt(UTF-8)"
+        data = chunks[1][1]
+        assert data.split(b"\x00", 1)[1][2:].lstrip(b"\x00").decode("utf-8").startswith("一只")
+
+    def test_non_png_content_not_modified(self, tmp_path, capsys):
+        p = tmp_path / "j.png"
+        raw = b"\xff\xd8\xff" + b"x" * 100  # JPEG 字节落了 .png 名
+        p.write_bytes(raw)
+        assert cc.embed_png_metadata(p, "x", None, {}) is False
+        assert p.read_bytes() == raw, "非 PNG 产物绝不能被改写"
+        assert "[WARN]" in capsys.readouterr().err
+
+    def test_no_part_file_leftover(self, tmp_path):
+        p = tmp_path / "a.png"
+        p.write_bytes(_png_bytes())
+        cc.embed_png_metadata(p, "x", None, {})
+        assert not list(tmp_path.glob("*.part")), "原子落盘不得残留 .part"
+
+    def test_parameters_text_shape(self):
+        s = cc.png_parameters_text("prompt1", "neg1", {"a": 1, "b": None})
+        lines = s.splitlines()
+        assert lines[0] == "prompt1"
+        assert lines[1] == "Negative prompt: neg1"
+        assert lines[2] == "a: 1", "值为 None 的键不得出现（不编造参数）"
+
+    def test_no_negative_line_when_absent(self):
+        s = cc.png_parameters_text("prompt1", None, {"k": "v"})
+        assert "Negative prompt" not in s
+
+
+# ---------- ti2i 参考图角色子句（调研 R11） ----------
+class TestRefRoleClauses:
+    def test_subject_is_noop(self):
+        assert cc.apply_ref_role("画一只猫", "subject") == "画一只猫"
+
+    def test_style_appends_constraint(self):
+        out = cc.apply_ref_role("画一只猫", "style")
+        assert out.startswith("画一只猫")
+        assert "style/aesthetic" in out and "do NOT reproduce" in out
+
+    def test_composition_appends_constraint(self):
+        out = cc.apply_ref_role("画一只猫", "composition")
+        assert "composition reference" in out
+
+    def test_invalid_role_exits(self):
+        with pytest.raises(SystemExit) as e:
+            cc.apply_ref_role("x", "bogus")
+        assert "code=invalid_param" in str(e.value)
+
+    def test_three_roles_distinct(self):
+        outs = {cc.apply_ref_role("x", r) for r in cc.REF_ROLE_CLAUSES}
+        assert len(outs) == 3
+
+
+# ---------- 跨进程并发闸（调研 R15：flock 槽位池） ----------
+class TestProviderSlot:
+    def test_zero_env_is_unlimited(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cc, "LOCK_DIR", tmp_path)
+        monkeypatch.setenv("WUDAOZI_CONCURRENCY_AGNES", "0")
+        with cc.provider_slot("agnes") as fh:
+            assert fh is None, "0=不限：不建槽位文件直接放行"
+        assert not list(tmp_path.iterdir())
+
+    def test_invalid_env_exits(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cc, "LOCK_DIR", tmp_path)
+        monkeypatch.setenv("WUDAOZI_CONCURRENCY_AGNES", "abc")
+        with pytest.raises(SystemExit) as e:
+            with cc.provider_slot("agnes"):
+                pass
+        assert "code=invalid_param" in str(e.value)
+
+    def test_acquire_release(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cc, "LOCK_DIR", tmp_path)
+        with cc.provider_slot("agnes") as fh:
+            assert fh is not None
+            assert (tmp_path / "agnes-0.lock").exists()
+        # 释放后可重新获取
+        with cc.provider_slot("agnes"):
+            pass
+
+    def test_exclusive_hold_blocks_second(self, tmp_path, monkeypatch):
+        import threading
+
+        monkeypatch.setattr(cc, "LOCK_DIR", tmp_path)
+        monkeypatch.setenv("WUDAOZI_CONCURRENCY_AGNES", "1")  # 默认 2 槽，压到 1 才测互斥
+        with cc.provider_slot("agnes"):
+            result = {}
+
+            def try_second():
+                try:
+                    with cc.provider_slot("agnes", timeout=0.3):
+                        result["ok"] = True
+                except SystemExit as e:
+                    result["exit"] = str(e)
+
+            t = threading.Thread(target=try_second)
+            t.start()
+            t.join()
+        assert "exit" in result and "timeout" in result["exit"], "被占用时必须在超时后显性失败"
+        assert "ok" not in result
+
+    def test_limit_caps_concurrent_overlap(self, tmp_path, monkeypatch):
+        import threading
+        import time as _t
+
+        monkeypatch.setattr(cc, "LOCK_DIR", tmp_path)
+        monkeypatch.setenv("WUDAOZI_CONCURRENCY_KOLORS", "2")
+        state = {"cur": 0, "max": 0}
+        mux = threading.Lock()
+
+        def worker():
+            with cc.provider_slot("kolors"):
+                with mux:
+                    state["cur"] += 1
+                    state["max"] = max(state["max"], state["cur"])
+                _t.sleep(0.08)
+                with mux:
+                    state["cur"] -= 1
+
+        threads = [threading.Thread(target=worker) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert state["max"] <= 2, f"6 个并发必须被 2 槽闸住（实测峰值 {state['max']}）"
+        assert state["cur"] == 0
+
+    def test_slot_files_shared_in_tmpdir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cc, "LOCK_DIR", tmp_path)
+        with cc.provider_slot("video", timeout=1):
+            assert (tmp_path / "video-0.lock").exists(), "槽位文件按 provider 命名"
+
+
+# ---------- 审查修复回归:符号链接槽位跳过不崩(POSIX) ----------
+class TestLockSymlinkHardening:
+    def test_symlinked_slot_skipped(self, tmp_path, monkeypatch):
+        import os as _os
+        import sys as _sys
+
+        if _sys.platform == "win32":
+            pytest.skip("O_NOFOLLOW 为 POSIX 语义")
+        monkeypatch.setattr(cc, "LOCK_DIR", tmp_path)
+        monkeypatch.setenv("WUDAOZI_CONCURRENCY_AGNES", "2")
+        # 预置指向不存在目标的符号链接:打开必须失败并跳过,走 slot-1
+        _os.symlink(tmp_path / "nonexistent-target", tmp_path / "agnes-0.lock")
+        with cc.provider_slot("agnes") as fh:
+            assert fh is not None, "符号链接槽位必须被跳过而非崩溃"
+
+    def test_meta_part_cleaned_on_rename_failure(self, tmp_path, monkeypatch, capsys):
+        # rename 失败(如磁盘写满)时:.part 残留必须被清掉(含 prompt 全文,不留在产物目录)
+        import pathlib as _pathlib
+
+        p = tmp_path / "a.png"
+        p.write_bytes(_png_bytes())
+
+        def _fail_rename(self, target):
+            raise OSError("simulated ENOSPC")
+
+        monkeypatch.setattr(_pathlib.Path, "rename", _fail_rename)
+        assert cc.embed_png_metadata(p, "x", None, {}) is False
+        assert "[WARN]" in capsys.readouterr().err
+        assert not list(tmp_path.glob("*.meta.part")), ".part 残留必须被清理"
+        assert p.read_bytes().startswith(b"\x89PNG"), "原产物不受影响"
+
+    def test_meta_part_dir_collision_no_crash(self, tmp_path, capsys):
+        # .part 路径被目录占用(极端场景):不得崩溃、不得改写产物
+        p = tmp_path / "a.png"
+        p.write_bytes(_png_bytes())
+        (tmp_path / "a.png.meta.part").mkdir()  # with_suffix 后的真实 .part 路径
+        assert cc.embed_png_metadata(p, "x", None, {}) is False
+        assert p.read_bytes().startswith(b"\x89PNG"), "原产物不受影响"

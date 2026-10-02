@@ -473,11 +473,14 @@ def main() -> int:
         video_id = None
 
     try:
-        if not a.resume:
-            video_id, created = create_task(body, api_key)
-            print(f"[INFO] 任务已创建: video_id={video_id} status={created.get('status')}", file=sys.stderr)
-        final = poll_task(video_id, api_key, a.poll_interval, a.max_wait)
-        save_video(final, out_path)
+        # 跨进程并发闸：视频任务重（分钟级）且计费，多会话并行易 429——
+        # 槽位覆盖整个任务生命周期（创建→轮询→下载），拿到槽位后 --max-wait 才起算
+        with _cc.provider_slot("video"):
+            if not a.resume:
+                video_id, created = create_task(body, api_key)
+                print(f"[INFO] 任务已创建: video_id={video_id} status={created.get('status')}", file=sys.stderr)
+            final = poll_task(video_id, api_key, a.poll_interval, a.max_wait)
+            save_video(final, out_path)
     except SystemExit as e:
         # 失败留痕 + 机器可读恢复句柄：stdout 单行 WUDAOZI_RESUME=<id> 供调用方解析
         #（video 日志全走 stderr，stdout 只这一行，互不污染）（调研建议#3）
@@ -498,6 +501,10 @@ def main() -> int:
         f"[OK] 已生成: {out_path} ({out_path.stat().st_size // (1024*1024)} MB)",
         file=sys.stderr,
     )
+    # stdout 管道契约：成功时 stdout 恰好一行 WUDAOZI_OUTPUT=<path>（失败时恰一行
+    # WUDAOZI_RESUME=<id>）——stdout 永远机器可读、可被 $(...) 捕获，人读日志全在 stderr
+    sys.stdout.write(f"WUDAOZI_OUTPUT={out_path}\n")
+    sys.stdout.flush()
     return 0
 
 

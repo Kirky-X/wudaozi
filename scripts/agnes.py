@@ -18,12 +18,15 @@ Usage:
 import argparse
 import json
 import os
+import random
 import sys
 import time
 import uuid
 from pathlib import Path
 
 import _cloud_common as _cc
+import _prompt_variants as _pv
+import assets as _assets
 
 ENDPOINT = "https://apihub.agnes-ai.com/v1/images/generations"
 MODEL = "agnes-image-2.1-flash"
@@ -128,7 +131,7 @@ def image_to_data_uri(path: str) -> str:
     return _cc.image_to_data_uri(path)
 
 
-def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
+def build_body(a: argparse.Namespace, height: int, width: int, instruction: str | None = None) -> dict:
     """Assemble agnes request body.
 
     ⚠️ agnes size is a WxH string (documentation example 1024x768 is landscape), easy to reverse, must be tested and pinned.
@@ -142,10 +145,15 @@ def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
       (OpenAI edits convention); agnes support needs live calibration — if the
       provider rejects the field, drop --mask and use full-image ti2i
     - --transparent native: extra_body["background"] = "transparent"
+
+    instruction 缺省取 a.instruction（--count>1 变体展开时由调用方传每份变体）。
+    ti2i 且 --ref-role != subject 时先追加参考图角色子句，再套 strict-prompt 护栏。
     """
     if getattr(a, "mask", None) and a.mode != "ti2i":
         sys.exit("[ERROR] --mask is only valid for ti2i (inpainting); t2i has no reference image to mask")
-    instruction = a.instruction
+    instruction = instruction if instruction is not None else a.instruction
+    if a.mode == "ti2i" and getattr(a, "ref_role", "subject") != "subject":
+        instruction = _cc.apply_ref_role(instruction, a.ref_role)
     if getattr(a, "strict_prompt", False):
         instruction = PROMPT_GUARD + instruction
 
@@ -166,16 +174,21 @@ def build_body(a: argparse.Namespace, height: int, width: int) -> dict:
         extra["background"] = "transparent"
 
     if a.mode == "ti2i":
-        if not a.input:
-            sys.exit("[ERROR] Image-to-image (ti2i) requires --input reference image path or URL")
-        # Remote http(s) URL passthrough (SSRF-checked — the VLM/provider fetches it,
-        # same exposure as vision.py); local path converted to Data URI
-        if a.input.startswith(("http://", "https://")):
-            _cc.assert_public_url(a.input, ctx="--input")
-            ref = a.input
+        refs = getattr(a, "_refs", None)
+        if refs:
+            # --ref 资产引用：多张参考图（上限 4 已在 resolve_refs 截断），全部转 data URI
+            extra["image"] = [image_to_data_uri(str(r)) for r in refs]
         else:
-            ref = image_to_data_uri(a.input)
-        extra["image"] = [ref]
+            if not a.input:
+                sys.exit("[ERROR] Image-to-image (ti2i) requires --input reference image path or URL")
+            # Remote http(s) URL passthrough (SSRF-checked — the VLM/provider fetches it,
+            # same exposure as vision.py); local path converted to Data URI
+            if a.input.startswith(("http://", "https://")):
+                _cc.assert_public_url(a.input, ctx="--input")
+                ref = a.input
+            else:
+                ref = image_to_data_uri(a.input)
+            extra["image"] = [ref]
         if getattr(a, "mask", None):
             mask_uri = image_to_data_uri(a.mask)
             if not mask_uri.startswith("data:image/png"):
@@ -288,6 +301,14 @@ Aspect ratio presets: """
     )
     p.add_argument("--input", help="ti2i reference image local path or public URL (required for ti2i)")
     p.add_argument(
+        "--ref",
+        nargs="+",
+        default=None,
+        metavar="ASSET",
+        help="ti2i 引用资产库参考图（assets.py add 创建；与 --input 互斥；"
+        "style 资产默认 --ref-role style；单次最多 4 张）",
+    )
+    p.add_argument(
         "--aspect",
         choices=list(ASPECT_RATIOS),
         help="Aspect ratio preset (takes priority over --height/--width)",
@@ -333,22 +354,31 @@ Aspect ratio presets: """
         action="store_true",
         help="prefix an anti-rewrite guard so the model renders the prompt verbatim",
     )
+    p.add_argument(
+        "--ref-role",
+        choices=sorted(_cc.REF_ROLE_CLAUSES),
+        default=None,
+        help="ti2i 参考图角色语义（默认 subject；--ref 引用 style 资产时默认 style）: "
+        "subject=参考图即主体(行为不变) / style=只借画风勿抄主体 / composition=只借构图与机角勿抄主体",
+    )
     a = p.parse_args()
     if not 1 <= a.count <= BATCH_MAX:
         p.error(f"--count must be 1-{BATCH_MAX}")
     return a
 
 
-def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
+def _generate_once(a: argparse.Namespace, api_key: str, index: int, instruction: str | None = None) -> Path:
     """One generation round (index is 1-based, used for filenames when count > 1).
 
+    instruction 缺省取 a.instruction；变体展开时由 main() 传入每份变体（non-repeating）。
     Returns the output path on success; raises SystemExit on failure (fail
     loudly, per-image in batch mode).
     """
+    instruction = instruction if instruction is not None else a.instruction
     height, width = resolve_size(a)
     out_path = resolve_output(a, height, width, index)
     started = time.monotonic()
-    body = build_body(a, height, width)
+    body = build_body(a, height, width, instruction)
 
     label = f"[{index}/{a.count}] " if a.count > 1 else ""
     print(f"{label}[INFO] provider=agnes mode={a.mode} size={width}x{height}", file=sys.stderr)
@@ -356,17 +386,37 @@ def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
     print(f"{label}[CMD] {to_curl(body, api_key)}", file=sys.stderr)
 
     try:
-        resp = call_api(body, api_key)
-        item = save_image(resp, out_path)
-        if a.transparent == "post":
-            remove_chroma(out_path, a.chroma)
+        # 跨进程并发闸：锁只覆盖网络 IO（请求 + 产物下载），本地像素处理不占槽位
+        with _cc.provider_slot("agnes"):
+            resp = call_api(body, api_key)
+            item = save_image(resp, out_path)
     except SystemExit as e:
         # 失败留痕：错误路径也落盘 sidecar（成功路径才有 sidecar 的盲区，调研建议#1）
         _cc.raise_with_trace(
             e, out_path, "agnes",
-            {"mode": a.mode, "instruction": a.instruction, "size": f"{width}x{height}",
+            {"mode": a.mode, "instruction": instruction, "size": f"{width}x{height}",
              "count": a.count, "index": index},
         )
+
+    if a.transparent == "post":
+        # 本地像素循环（157ms/1024² 实测），放在槽位外不拖累其他会话排队
+        try:
+            remove_chroma(out_path, a.chroma)
+        except SystemExit as e:
+            _cc.raise_with_trace(
+                e, out_path, "agnes",
+                {"stage": "chroma-removal", "mode": a.mode, "instruction": instruction,
+                 "size": f"{width}x{height}", "count": a.count, "index": index},
+            )
+
+    # PNG 文本 chunk 元数据（webui 兼容）：remove_chroma 的 PIL 重存会丢 chunk，必须在它之后写
+    _cc.embed_png_metadata(
+        out_path, instruction, None,
+        {"provider": "agnes", "model": MODEL, "mode": a.mode,
+         "size": f"{width}x{height}", "aspect": a.aspect,
+         "count": a.count if a.count > 1 else None,
+         "index": index if a.count > 1 else None},
+    )
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     sidecar = write_sidecar(
@@ -375,13 +425,15 @@ def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
             "provider": "agnes",
             "mode": a.mode,
             "request": {
-                "instruction": a.instruction,
+                "instruction": instruction,
                 "size": f"{width}x{height}",
                 "aspect": a.aspect,
                 "transparent": a.transparent,
                 "chroma": a.chroma if a.transparent == "post" else None,
                 "mask": a.mask,
                 "strict_prompt": a.strict_prompt,
+                "ref_role": getattr(a, "ref_role", "subject"),
+                "ref": getattr(a, "ref", None),
                 "count": a.count,
                 "index": index,
             },
@@ -399,11 +451,27 @@ def _generate_once(a: argparse.Namespace, api_key: str, index: int) -> Path:
         f"{elapsed_ms} ms) sidecar={sidecar.name}",
         file=sys.stderr,
     )
+    # stdout 管道契约：产物路径一行走 stdout（$(...) 可捕获）；单次 write 保证批量
+    # 多线程下行不被其他线程粘连
+    sys.stdout.write(f"WUDAOZI_OUTPUT={out_path}\n")
+    sys.stdout.flush()
     return out_path
 
 
 def main() -> int:
     a = parse_args()
+
+    # --ref 资产解析（ti2i）：refs 取自资产库（拷贝入库的副本）；kind 决定默认 ref-role
+    if a.ref:
+        if a.mode != "ti2i":
+            sys.exit("[ERROR] --ref 仅支持 ti2i（角色/画风资产）")
+        if a.input:
+            sys.exit("[ERROR] --input 与 --ref 互斥（--ref 直接引用资产库）")
+        kinds = [_assets.load_asset(n)["kind"] for n in a.ref]
+        a._refs = _assets.resolve_refs(a.ref)
+        if a.ref_role is None:
+            a.ref_role = "style" if kinds[0] == "style" else "subject"
+    a.ref_role = a.ref_role or "subject"
 
     api_key = os.environ.get("AGNES_API_KEY")
     if not api_key:
@@ -423,8 +491,14 @@ def main() -> int:
         print("[DRY-RUN] Not executed (no key / for debugging)", file=sys.stderr)
         return 0
 
+    # 变体展开：含 {a|b|c} / {_词库_} 语法时每份一份非重复变体；无语法 = 原样 N 份（历史行为）
+    segs = _pv.parse_slots(a.instruction)
+    instructions = _pv.sample_variants(a.instruction, a.count, random.Random(), segments=segs)
+    if _pv.has_variant_syntax(a.instruction):
+        print(f"[INFO] 变体展开: {a.count} 份（组合空间 {_pv.combo_count(segs)}，非重复抽样）", file=sys.stderr)
+
     if a.count == 1:
-        _generate_once(a, api_key, 1)
+        _generate_once(a, api_key, 1, instructions[0])
         return 0
 
     # Batch: concurrent with a small pool (playground generate_image_batch).
@@ -435,7 +509,10 @@ def main() -> int:
     failures = []
     results = []
     with ThreadPoolExecutor(max_workers=min(a.count, BATCH_CONCURRENCY)) as pool:
-        futures = {pool.submit(_generate_once, a, api_key, i + 1): i + 1 for i in range(a.count)}
+        futures = {
+            pool.submit(_generate_once, a, api_key, i + 1, instructions[i]): i + 1
+            for i in range(a.count)
+        }
         for fut in futures:
             try:
                 results.append(fut.result())
@@ -488,6 +565,18 @@ if __name__ == "__main__":
     ), 1024, 1024)
     assert body["size"] == "1024x1024"
     assert body["extra_body"]["response_format"] == "url"
+    # --ref-role：subject 不加子句，style/composition 追加约束
+    assert build_body(SimpleNamespace(
+        mode="ti2i", instruction="x", input="https://e.com/a.png", base64=False,
+        ref_role="subject",
+    ), 1024, 1024)["prompt"] == "x"
+    assert "style/aesthetic" in build_body(SimpleNamespace(
+        mode="ti2i", instruction="x", input="https://e.com/a.png", base64=False,
+        ref_role="style",
+    ), 1024, 1024)["prompt"]
+    # 变体展开：无语法 = 原样；有语法 = 非重复
+    assert _pv.sample_variants("plain", 2, random.Random(1)) == ["plain", "plain"]
+    assert sorted(_pv.sample_variants("{a|b}", 2, random.Random(7))) == ["a", "b"]
     print(f"  Aspect ratio presets: {len(ASPECT_RATIOS)}")
     print(f"  ENDPOINT: {ENDPOINT}")
     print(f"  MODEL: {MODEL}")

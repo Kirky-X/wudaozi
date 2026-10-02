@@ -10,6 +10,9 @@
 - fail / code_for_status / ERROR_HINTS:稳定错误码统一出口 + provider 提示表
 - assert_public_url / parse_host_ip:SSRF 防护(自 video.py 上移共享)
 - write_failed_sidecar / raise_with_trace:失败留痕
+- embed_png_metadata:webui 兼容 PNG 文本 chunk 元数据(纯 stdlib,boogu 同享)
+- provider_slot:跨进程并发闸(flock/msvcrt 槽位池,boogu 同享)
+- REF_ROLE_CLAUSES / apply_ref_role:ti2i 参考图角色子句(boogu 同享)
 
 2026-10 吸收自 luminarylane/fal-mcp-server 的 handlers/ 分层模式:provider
 脚本只留 build_body + 常量 + CLI,新增 provider 的边际成本 ≈ build_body + 常量。
@@ -20,21 +23,35 @@ imported to avoid cross-provider coupling」。本模块是对该决定的显式
 错误出口(含 provider 提示表 ERROR_HINTS——集中管理以保证四个脚本提示一致);
 provider 差异(端点/请求体/尺寸表/自检)仍全部留在各自脚本。
 """
-# ponytail: 本模块不做任何路由/重试决策,只做传输、落盘与错误出口——决策归各脚本(规则5)。
+# ponytail: 本模块不做任何路由/重试/降级决策,只做传输、落盘、元数据、并发闸与错误出口——决策归各脚本(规则5)。
 
 import base64
+import contextlib
 import ipaddress
 import json
+import os
 import re
 import shlex
 import shutil
 import socket
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from pathlib import Path
+
+try:
+    import fcntl  # POSIX 跨进程文件锁
+except ImportError:  # Windows
+    fcntl = None
+try:
+    import msvcrt  # Windows 文件锁兜底
+except ImportError:
+    msvcrt = None
+assert fcntl is not None or msvcrt is not None, "need fcntl (POSIX) or msvcrt (Windows) for cross-process locks"
 
 # (hint_key, HTTP status) → 可执行提示。hint_key 与消息里的 label 解耦:
 # vision.py 的 label 是 provider 名(agnes/aiping),用 <provider>-vlm 作 hint_key,
@@ -400,3 +417,213 @@ def assert_public_url(u: str, ctx: str = "URL") -> None:
         return  # 公网域名，放行
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip in _CGNAT:
         fail("invalid_param", f"{ctx} 禁止内网/环回/链路本地/CGNAT/保留地址（SSRF 防护）: {u}")
+
+
+# ============================================================================
+# PNG tEXt/iTXt 元数据内嵌（调研：产物元数据 sidecar-only → PNG 内嵌 + sidecar 双轨）
+# ============================================================================
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_IHDR_CHUNK_END = 8 + (4 + 4 + 13 + 4)  # 签名 + IHDR 块（len+type+固定13B数据+CRC）
+
+
+def png_chunk(ctype: bytes, data: bytes) -> bytes:
+    """按 PNG 规范编码一个 chunk：len + type + data + CRC32(type+data)。"""
+    return len(data).to_bytes(4, "big") + ctype + data + zlib.crc32(ctype + data).to_bytes(4, "big")
+
+
+def _png_text_chunk(keyword: str, value: str) -> bytes:
+    """文本 → tEXt（Latin-1 可编码时）或 iTXt 未压缩（UTF-8，中文路径）。
+    与 PIL PngInfo.add_text 的选择语义一致：webui/ComfyUI/sd.cpp 读 tEXt，
+    PIL 系读者两类都认。"""
+    try:
+        return png_chunk(b"tEXt", keyword.encode("latin-1") + b"\x00" + value.encode("latin-1"))
+    except UnicodeEncodeError:
+        return png_chunk(
+            b"iTXt",
+            keyword.encode("latin-1") + b"\x00\x00\x00\x00\x00" + value.encode("utf-8"),
+        )
+
+
+def png_parameters_text(prompt: str, negative: str | None, params: dict) -> str:
+    """webui 兼容 parameters 字符串：首行 prompt → 可选 `Negative prompt:` 行 → 末行 key: value 对。
+    只写真实生效的参数（规则26：不编造 sampler/steps 等该 provider 没有的键）。"""
+    lines = [prompt]
+    if negative:
+        lines.append(f"Negative prompt: {negative}")
+    kv = ", ".join(f"{k}: {v}" for k, v in params.items() if v is not None)
+    if kv:
+        lines.append(kv)
+    return "\n".join(lines)
+
+
+def embed_png_metadata(out_path: Path, prompt: str, negative: str | None, params: dict) -> bool:
+    """把 webui 兼容 parameters 写进 PNG 的文本 chunk（紧跟 IHDR 之后，规范允许的位置）。
+
+    纯 stdlib 实现（不引入 Pillow 依赖）：读原字节 → 在 IHDR 后拼接新 chunk →
+    .part 原子落盘。非 PNG 内容（响应实际是 JPEG 但落了 .png 名等）→ [WARN] 跳过
+    并返回 False，**绝不删图**：产物是已计费的结果，sidecar/文件名仍可追溯；
+    写入失败同样只告警不掩盖成功事实（规则11：显性化 ≠ 推翻成功）。
+    """
+    try:
+        raw = out_path.read_bytes()
+        if not raw.startswith(PNG_SIGNATURE):
+            print(
+                f"[WARN] PNG 元数据未写入: {out_path.name} 非 PNG 内容，sidecar/文件名仍可追溯",
+                file=sys.stderr,
+            )
+            return False
+        chunk = _png_text_chunk("parameters", png_parameters_text(prompt, negative, params))
+        tmp = out_path.with_suffix(out_path.suffix + ".meta.part")
+        try:
+            tmp.write_bytes(raw[:_IHDR_CHUNK_END] + chunk + raw[_IHDR_CHUNK_END:])
+            tmp.rename(out_path)
+        except OSError:
+            tmp.unlink(missing_ok=True)  # 残留的 .meta.part 含 prompt 全文，不留在产物目录
+            raise
+        return True
+    except OSError as e:
+        print(f"[WARN] PNG 元数据写入失败（不影响产物）: {e}", file=sys.stderr)
+        return False
+
+
+# ============================================================================
+# ti2i 参考图角色语义（调研：--ref-role subject|style|composition，纯文本拼接）
+# ============================================================================
+REF_ROLE_CLAUSES = {
+    # subject 为默认：参考图即主体本身，不加子句（保持既有行为不变）
+    "subject": "",
+    "style": (
+        "Use the reference image ONLY as a style/aesthetic reference (palette, texture, "
+        "rendering style); do NOT reproduce its subject content; render a completely new "
+        "subject exactly as described in the instruction."
+    ),
+    "composition": (
+        "Use the reference image ONLY for composition reference (framing, crop, camera "
+        "angle, lighting layout); do NOT reproduce its subject; render a different "
+        "subject exactly as described in the instruction."
+    ),
+}
+
+
+def apply_ref_role(instruction: str, role: str) -> str:
+    """按参考图角色把约束子句追加到 instruction（确定性拼接，规则5）。"""
+    clause = REF_ROLE_CLAUSES.get(role)
+    if clause is None:
+        fail("invalid_param", f"--ref-role 只接受 {sorted(REF_ROLE_CLAUSES)}: {role}")
+    return f"{instruction}\n{clause}" if clause else instruction
+
+
+# ============================================================================
+# 跨进程并发闸（调研：flock 槽位文件池，防多 agent 会话同时打爆后端 429/OOM）
+# ============================================================================
+PROVIDER_CONCURRENCY_DEFAULT = {
+    "agnes": 2,   # 云端：限流预算保守估 2（多会话各 2 仍可能 429，429 显式报错由用户决策）
+    "kolors": 2,
+    "video": 2,   # 视频任务重、耗时长，保守 2
+    "boogu": 1,   # 本地 GPU：16GB 显存一次一张，多会话并行必 OOM
+}
+LOCK_POLL_S = 0.05
+# 排队默认上限：持有者"活而僵"(未崩溃不释放)时排队方不会无限挂起；超时显性退出(规则11)
+DEFAULT_SLOT_TIMEOUT_S = 3600
+SLOT_HEARTBEAT_S = 30.0
+LOCK_DIR = Path(tempfile.gettempdir()) / "wudaozi-locks"
+
+
+def _provider_limit(label: str) -> int:
+    """槽位上限：默认表 + WUDAOZI_CONCURRENCY_<LABEL> 环境变量覆盖；0=不限。
+    非法环境值显性报错，不静默回退（规则11）。"""
+    limit = PROVIDER_CONCURRENCY_DEFAULT.get(label, 1)
+    raw = os.environ.get(f"WUDAOZI_CONCURRENCY_{label.upper()}")
+    if raw is None:
+        return limit
+    try:
+        return int(raw)
+    except ValueError:
+        fail(
+            "invalid_param",
+            f"WUDAOZI_CONCURRENCY_{label.upper()}={raw!r} 不是整数（0=不限）",
+        )
+
+
+def _try_lock(fh) -> None:
+    """非阻塞独占加锁；被占抛 OSError。POSIX 用 flock，Windows 用 msvcrt.locking。"""
+    if fcntl is not None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+
+
+def _unlock(fh) -> None:
+    if fcntl is not None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    else:
+        try:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass  # 解锁失败交给 close 兜底（进程退出内核必释放）
+
+
+@contextlib.contextmanager
+def provider_slot(label: str, timeout: float | None = None):
+    """同 provider 的跨进程并发闸：拿不到槽位就短轮询排队(0.05s,stderr 首次提示 +
+    30s 心跳)，持有者崩溃由内核自动释放锁。timeout 只约束"等槽位"(默认 3600s 上限)，
+    拿到后才进入调用方计时。
+
+    - 上限：PROVIDER_CONCURRENCY_DEFAULT[label]，env WUDAOZI_CONCURRENCY_<LABEL> 覆盖，0=不限
+    - 槽位文件放系统临时目录(会话间共享、无需工作区写权限)；O_NOFOLLOW + 0600
+      防多用户机器上 /tmp 预置符号链接攻击(CWE-59)，打开失败跳过该槽位不崩
+    与进程内线程池(agnes/kolors 的 BATCH_CONCURRENCY)正交：那管单进程内并发，这管跨进程总量。
+    """
+    limit = _provider_limit(label)
+    if limit <= 0:
+        yield None
+        return
+    LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    timeout = DEFAULT_SLOT_TIMEOUT_S if timeout is None else timeout
+    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    fh = None
+    waited = False
+    last_heartbeat = started
+    while fh is None:
+        for i in range(limit):
+            try:
+                # O_NOFOLLOW 拒绝符号链接；O_CREAT 0600 私有；打开失败(权限/竞态)跳过该槽位
+                flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+                candidate = os.fdopen(os.open(LOCK_DIR / f"{label}-{i}.lock", flags, 0o600), "a+")
+            except OSError:
+                continue
+            try:
+                _try_lock(candidate)
+                fh = candidate
+                break
+            except OSError:
+                candidate.close()
+        if fh is not None:
+            break
+        now = time.monotonic()
+        if now >= deadline:
+            fail(
+                "timeout",
+                f"等待 {label} 并发槽位超时(已等 {int(now - started)}s，上限 {int(timeout)}s，上限 {limit} 槽)",
+                f"  → 另一个 wudaozi 进程占用了槽位；等它结束，或临时设 "
+                f"WUDAOZI_CONCURRENCY_{label.upper()}=0 不限(自行承担 429/OOM 风险)",
+            )
+        if not waited:
+            print(f"[INFO] {label} 并发槽位已满(上限 {limit})，排队等待…", file=sys.stderr)
+            waited = True
+        elif now - last_heartbeat >= SLOT_HEARTBEAT_S:
+            print(
+                f"[INFO] 仍在排队 {label}(已等 {int(now - started)}s / 上限 {int(timeout)}s)",
+                file=sys.stderr,
+            )
+            last_heartbeat = now
+        time.sleep(LOCK_POLL_S)
+    try:
+        yield fh
+    finally:
+        try:
+            _unlock(fh)
+        finally:
+            fh.close()

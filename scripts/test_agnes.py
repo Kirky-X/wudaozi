@@ -436,7 +436,7 @@ class TestBatchMain:
             ["agnes.py", "t2i", "-i", "x", "--count", "2", "--output-dir", str(tmp_path)],
         )
 
-        def fake_once(a, api_key, index):
+        def fake_once(a, api_key, index, instruction=None):
             if index == 2:
                 raise SystemExit("[ERROR] code=auth_error batch-sim-401")
             out = tmp_path / f"ok_{index}.png"
@@ -458,7 +458,7 @@ class TestBatchMain:
             ["agnes.py", "t2i", "-i", "x", "--count", "2", "--output-dir", str(tmp_path)],
         )
 
-        def fake_once(a, api_key, index):
+        def fake_once(a, api_key, index, instruction=None):
             out = tmp_path / f"ok_{index}.png"
             out.write_bytes(b"x" * 2048)
             return out
@@ -466,3 +466,215 @@ class TestBatchMain:
         monkeypatch.setattr(agnes, "_generate_once", fake_once)
         assert agnes.main() == 0
         assert "[BATCH] 2/2" in capsys.readouterr().err
+
+
+# ---------- --ref-role 参考图角色子句（调研 R11） ----------
+class TestRefRole:
+    def test_subject_default_no_clause(self):
+        body = agnes.build_body(SimpleNamespace(
+            mode="ti2i", instruction="换成沙滩背景", input="https://e.com/a.png", base64=False,
+            ref_role="subject",
+        ), 1024, 1024)
+        assert body["prompt"] == "换成沙滩背景"
+
+    def test_style_clause_appended(self):
+        body = agnes.build_body(SimpleNamespace(
+            mode="ti2i", instruction="画一只猫", input="https://e.com/a.png", base64=False,
+            ref_role="style",
+        ), 1024, 1024)
+        assert body["prompt"].startswith("画一只猫")
+        assert "style/aesthetic" in body["prompt"]
+        assert "do NOT reproduce its subject" in body["prompt"]
+
+    def test_composition_clause_appended(self):
+        body = agnes.build_body(SimpleNamespace(
+            mode="ti2i", instruction="画一只猫", input="https://e.com/a.png", base64=False,
+            ref_role="composition",
+        ), 1024, 1024)
+        assert "composition reference" in body["prompt"]
+
+    def test_invalid_role_exits(self):
+        with pytest.raises(SystemExit):
+            agnes.build_body(SimpleNamespace(
+                mode="ti2i", instruction="x", input="https://e.com/a.png", base64=False,
+                ref_role="bogus",
+            ), 1024, 1024)
+
+    def test_missing_attr_defaults_subject(self):
+        # 旧调用方（无 ref_role 属性）行为不变
+        body = agnes.build_body(_body_ns(mode="ti2i", input="https://e.com/a.png"), 1024, 1024)
+        assert body["prompt"] == "测试 prompt"
+
+    def test_cli_choices(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["agnes.py", "ti2i", "-i", "x", "--input", "u",
+                                         "--ref-role", "style"])
+        assert agnes.parse_args().ref_role == "style"
+
+    def test_cli_default_none_normalized_in_main(self, monkeypatch):
+        # CLI 默认 None:main() 归一化为 subject(--ref style 资产时派生 style)
+        monkeypatch.setattr("sys.argv", ["agnes.py", "t2i", "-i", "x"])
+        assert agnes.parse_args().ref_role is None
+
+
+# ---------- 变体展开集成（调研 R12） ----------
+class TestVariantsMain:
+    def _run(self, tmp_path, monkeypatch, instruction, count):
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agnes.py", "t2i", "-i", instruction, "--count", str(count), "--output-dir", str(tmp_path)],
+        )
+        captured = []
+
+        def fake_once(a, api_key, index, instruction=None):
+            captured.append(instruction)
+            out = tmp_path / f"ok_{index}.png"
+            out.write_bytes(b"x" * 2048)
+            return out
+
+        monkeypatch.setattr(agnes, "_generate_once", fake_once)
+        assert agnes.main() == 0
+        return captured
+
+    def test_plain_instruction_stays_identical(self, tmp_path, monkeypatch):
+        got = self._run(tmp_path, monkeypatch, "一只猫", 3)
+        assert got == ["一只猫"] * 3, "无变体语法 = 原样 N 份（历史行为）"
+
+    def test_enum_expands_nondecreasing_variants(self, tmp_path, monkeypatch):
+        got = self._run(tmp_path, monkeypatch, "一只{橘|黑|白}猫", 3)
+        assert len(got) == 3
+        assert len(set(got)) == 3, "组合空间足够时必须非重复"
+        assert all(g in ("一只橘猫", "一只黑猫", "一只白猫") for g in got)
+
+    def test_single_count_with_syntax_renders_one_variant(self, tmp_path, monkeypatch):
+        got = self._run(tmp_path, monkeypatch, "一只{橘|黑}猫", 1)
+        assert got == [got[0]]
+        assert got[0] in ("一只橘猫", "一只黑猫")
+
+
+# ---------- PNG 元数据 + stdout 契约（调研 R1/R3） ----------
+class TestOutputContractAndMetadata:
+    def _ns(self, tmp_path, **kw):
+        base = dict(
+            mode="t2i", instruction="x", input=None, aspect="1:1", height=None, width=None,
+            output_dir=str(tmp_path), base64=False, dry_run=False, count=1,
+            transparent="off", chroma="magenta", strict_prompt=False, mask=None,
+            ref_role="subject",
+        )
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def test_success_stdout_has_machine_line(self, tmp_path, monkeypatch, capsys):
+        import base64
+        payload = json.dumps({"data": [{"b64_json": base64.b64encode(b"x" * 2048).decode()}]}).encode()
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: _FakeResp(payload))
+        out = agnes._generate_once(self._ns(tmp_path), "k", 1)
+        captured = capsys.readouterr()
+        assert captured.out == f"WUDAOZI_OUTPUT={out}\n", "stdout 必须恰好一行机器可读路径"
+
+    def test_png_gets_parameters_chunk(self, tmp_path, monkeypatch):
+        # 真实 PNG 字节：签名 + 合法 IHDR（13B 数据）+ 填充块（过 1KB 产物校验）
+        import base64
+        import struct
+        import zlib
+        ihdr_data = struct.pack(">IIBBBBB", 8, 8, 8, 2, 0, 0, 0)
+        ihdr = struct.pack(">I", 13) + b"IHDR" + ihdr_data + struct.pack(">I", zlib.crc32(b"IHDR" + ihdr_data))
+        pad_data = b"\x00" * 2000
+        pad = struct.pack(">I", len(pad_data)) + b"prVt" + pad_data + struct.pack(">I", zlib.crc32(b"prVt" + pad_data))
+        png_bytes = b"\x89PNG\r\n\x1a\n" + ihdr + pad
+        payload = json.dumps({"data": [{"b64_json": base64.b64encode(png_bytes).decode()}]}).encode()
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: _FakeResp(payload))
+        out = agnes._generate_once(self._ns(tmp_path), "k", 1)
+        raw = out.read_bytes()
+        assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+        assert b"tEXt" in raw[:200] and b"parameters" in raw[:200]
+        # IHDR 原样保留在头部，tEXt 紧跟其后（33 起是 chunk 长度字段，37 起是类型）
+        assert raw[12:16] == b"IHDR" and raw[37:41] == b"tEXt"
+
+    def test_non_png_content_skips_metadata_loudly(self, tmp_path, monkeypatch, capsys):
+        # 响应实际是 JPEG 但落了 .png 名：绝不损坏产物，告警显性化
+        import base64
+        payload = json.dumps({"data": [{"b64_json": base64.b64encode(b"\xff\xd8\xff" + b"x" * 2045).decode()}]}).encode()
+        monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout: _FakeResp(payload))
+        out = agnes._generate_once(self._ns(tmp_path), "k", 1)
+        err = capsys.readouterr().err
+        assert "[WARN]" in err and "PNG" in err
+        assert out.read_bytes().startswith(b"\xff\xd8\xff"), "产物字节不得被改动"
+
+
+# ---------- 审查修复回归:agnes --ref 资产引用(此前文档承诺未实现) ----------
+class TestRefAssets:
+    def _seed_asset(self, store, monkeypatch, name="hero", kind="character"):
+        import sys as _sys
+        from pathlib import Path as _P
+
+        _sys.path.insert(0, str(_P(__file__).parent))
+        import assets as _assets
+
+        monkeypatch.setenv("WUDAOZI_ASSETS_DIR", str(_P(store)))
+        ref = _P(store) / f"{name}.png"
+        ref.write_bytes(b"\x89PNG-fake")
+        monkeypatch.setattr("sys.argv", ["assets.py", "add", name, "--kind", kind, "--ref", str(ref)])
+        assert _assets.main() == 0
+        return ref
+
+    def test_build_body_uses_refs_list(self, tmp_path):
+        for name in ("a.png", "b.png"):
+            (tmp_path / name).write_bytes(b"\x89PNG-fake")
+        body = agnes.build_body(SimpleNamespace(
+            mode="ti2i", instruction="画一只猫", input=None, base64=False,
+            ref_role="subject", _refs=[tmp_path / "a.png", tmp_path / "b.png"],
+        ), 1024, 1024)
+        imgs = body["extra_body"]["image"]
+        assert len(imgs) == 2
+        assert all(u.startswith("data:image/png;base64,") for u in imgs), "--ref 多张全部转 data URI"
+
+    def test_main_ref_dry_run_subject(self, tmp_path, monkeypatch, capsys):
+        self._seed_asset(tmp_path, monkeypatch, "hero", "character")
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agnes.py", "ti2i", "-i", "画一只猫", "--ref", "hero",
+             "--output-dir", str(tmp_path), "--dry-run"],
+        )
+        assert agnes.main() == 0
+        err = capsys.readouterr().err
+        assert "[DRY-RUN]" in err
+        assert "style/aesthetic" not in err, "character 资产默认 subject,无风格子句"
+
+    def test_main_ref_style_asset_gets_style_clause(self, tmp_path, monkeypatch, capsys):
+        self._seed_asset(tmp_path, monkeypatch, "ink", "style")
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agnes.py", "ti2i", "-i", "画一只猫", "--ref", "ink",
+             "--output-dir", str(tmp_path), "--dry-run"],
+        )
+        assert agnes.main() == 0
+        assert "style/aesthetic" in capsys.readouterr().err, "style 资产默认派生 --ref-role style"
+
+    def test_main_ref_conflicts_with_input(self, tmp_path, monkeypatch):
+        self._seed_asset(tmp_path, monkeypatch, "hero", "character")
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agnes.py", "ti2i", "-i", "x", "--ref", "hero", "--input", "a.png", "--dry-run"],
+        )
+        with pytest.raises(SystemExit) as e:
+            agnes.main()
+        assert "互斥" in str(e.value)
+
+    def test_main_ref_rejected_for_t2i(self, tmp_path, monkeypatch):
+        self._seed_asset(tmp_path, monkeypatch, "hero", "character")
+        monkeypatch.setenv("AGNES_API_KEY", "agn-test")
+        monkeypatch.setattr(
+            sys, "argv",
+            ["agnes.py", "t2i", "-i", "x", "--ref", "hero", "--dry-run"],
+        )
+        with pytest.raises(SystemExit) as e:
+            agnes.main()
+        assert "仅支持 ti2i" in str(e.value)
+
+    def test_role_default_normalized_subject(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["agnes.py", "t2i", "-i", "x"])
+        assert agnes.parse_args().ref_role is None, "CLI 默认 None(由 main 归一化/资产派生)"

@@ -1,0 +1,9 @@
+# 氛围词库（自著，每行一个词；供 {_mood_} 变体引用，配合 --count 出刻意差异的批量图）
+serene and tranquil
+melancholic and quiet
+energetic and vibrant
+mysterious and moody
+whimsical and playful
+epic and majestic
+intimate and warm
+bleak and desolate
