@@ -42,7 +42,7 @@ Transforms users' vague media requirements into executable commands: **Select ca
 
 **Default routing**: `AGNES_API_KEY` set → image generation via agnes, understanding via agnes, video via agnes; not set → ask user "configure key or use boogu locally". kolors serves as t2i alternative when agnes is rate-limited/unavailable, requires separate `AIPING_API_KEY` configuration.
 
-**Cost ordering** (verified 2026-10-02): agnes-ai.com / aiping.cn 定价页未公开可核实单价（403 / JS 渲染无数据）——按量计费，以 provider 账单为准，**不编造单价**（规则 26）。可靠排序仅一条：boogu 本地（只花算力）< 任一云端（每张图/每段视频都计费）。云端两家相对价格未核实，换 provider 的理由是**可用性/能力面**（如限流、ti2i 支持），不是猜测的价格差。
+**Cost ordering** (verified 2026-10-02): agnes-ai.com / aiping.cn 定价页未公开可核实单价（403 / JS 渲染无数据）——按量计费，以 provider 账单为准，**不编造单价**。可靠排序仅一条：boogu 本地（只花算力）< 任一云端（每张图/每段视频都计费）。云端两家相对价格未核实，换 provider 的理由是**可用性/能力面**（如限流、ti2i 支持），不是猜测的价格差。
 
 > 🔴 **CHECKPOINT · 花费确认**: `--count > 1`（批量出图）与时长 ≥10s 的视频执行前，先向用户报预估**花费量级**再执行（"将生成 8 张图" / "将生成 18s 视频，生成失败也计费"）。定价未公开时不报具体金额，报量级即可；失败重试同样消耗额度（agnes 无幂等键，勿重复提交，见 video.py `--resume`）。
 
@@ -57,7 +57,7 @@ Transforms users' vague media requirements into executable commands: **Select ca
 | Mask inpainting (`--mask`, ti2i) | ✅ | — | — |
 | Transparent background (`--transparent native/post`) | ✅ | — | — |
 | Batch (`--count 1-8`) | ✅ | ✅ | — (one at a time, GPU memory) |
-| Custom size snap (16-multiple) | ✅ | — (string size, provider-validated) | — (preset matrix) |
+| Custom size snap (16-multiple) | ✅ | — (string size, provider-validated) | ✅ (custom `--height/--width` align down to 16) |
 | Sidecar metadata `.json` | ✅ | — | — |
 | `--strict-prompt` | ✅ | — | — |
 
@@ -264,26 +264,11 @@ Scripts automatically:
 
 **Aspect ratio presets** (all 16-aligned, longest side ≤ 2048): `1:1`(1024²) · `3:4`/`4:3`(1024×1360) · `2:3`/`3:2`(1024×1536) · `9:16`/`16:9`(1024×1824). Can also use `--height/--width` for custom (scripts align down to 16).
 
-**Absorbed extras (agnes only)**: `--mask m.png` (ti2i inpainting, transparent areas = redraw region) · `--transparent native|post` + `--chroma magenta|green` (transparent background for icons/stickers; `post` needs optional Pillow and appends a flat-chroma background directive, then removes it locally) · `--count 1-8` (concurrent batch; partial failures reported, successes kept) · `--strict-prompt` (anti-rewrite guard prefix) · sidecar `<output>.json` (request vs actual params, revised_prompt, elapsed, seed echo) · `--ref-role subject|style|composition`（ti2i 参考图角色语义：默认 subject 行为不变；style=只借画风勿抄主体 / composition=只借构图与机角勿抄主体，确定性子句注入） · `--ref <asset>`（引用 4F 资产库，character/style 资产自动映射角色语义） · **变体语法**：instruction 含 `{橘|黑|白}` 枚举或 `{_lighting_}` 词库引用时，`--count` 每份渲染一个非重复变体（组合不足告警过采样）——批量出差异图，不是 N 张同质图。
+**Absorbed extras**（吸收自 gpt_image_playground；已标注共享 provider，未标注的为 agnes 独有）: `--mask m.png` (ti2i inpainting, transparent areas = redraw region) · `--transparent native|post` + `--chroma magenta|green` (transparent background for icons/stickers; `post` needs optional Pillow and appends a flat-chroma background directive, then removes it locally) · `--count 1-8` (**agnes/kolors** concurrent batch; partial failures reported, successes kept) · `--strict-prompt` (anti-rewrite guard prefix) · sidecar `<output>.json` (request vs actual params, revised_prompt, elapsed, seed echo) · `--ref-role subject|style|composition`（**agnes/boogu** ti2i 参考图角色语义：默认 subject 行为不变；style=只借画风勿抄主体 / composition=只借构图与机角勿抄主体，确定性子句注入） · `--ref <asset>`（**agnes/boogu** 引用 4F 资产库，character/style 资产自动映射角色语义） · **变体语法**（**agnes/kolors**）：instruction 含 `{橘|黑|白}` 枚举或 `{_lighting_}` 词库引用时，`--count` 每份渲染一个非重复变体（组合不足告警过采样）——批量出差异图，不是 N 张同质图。
 
 **Key parameter overrides** (defaults usually suffice): `--steps` `--text-guidance` `--dmd-sigma` `--device` `--negative-instruction`. Full list: `python3 scripts/boogu.py --help`.
 
 **Local-only extras (boogu)**: `--sweep steps=20,30,50 text-guidance=4.0,3.5,3.0`（同 seed lockstep 参数扫描，一命令出整组对比图；>1 长度的列表必须等长，单值广播；逐轮结果带 `[SWEEP]` stderr 标记，失败不中断其余轮次） · `--ref <asset>`（引用 4F 资产库；style 资产默认 `--ref-role style`；官方脚本单图输入，多张仅取第一张） · `--ref-role subject|style|composition`（参考图角色语义，确定性子句注入） · 产物 PNG 内嵌**全量生效参数**（seed/steps/cfg/量化档，webui 兼容）——本地引擎是三家唯一可完整复现的，对比图互可追溯。
-
-### 4F · 资产库与就绪自检 (`scripts/assets.py` / `scripts/doctor.py`)
-
-```bash
-# 角色/画风资产：钉住满意的图，ti2i 用 --ref 复用（免每次重述外观）
-python3 scripts/assets.py add hero --kind character --from-last   # 最近一次生成直接钉（生成→喜欢→钉住→复用）
-python3 scripts/assets.py add ink --kind style --ref ref.png      # 画风资产：只借美学勿抄主体
-python3 scripts/assets.py list                                    # show <name> / remove <name>
-
-# 就绪自检：一条命令报告 key 存在性/boogu 栈(venv/GPU/模型)/能力×provider 矩阵/默认路由结论
-python3 scripts/doctor.py
-```
-
-- kind 语义与 `--ref-role` 对齐：**character → subject**（参考图即角色本人，复现同一角色）、**style → style**（只借画风勿抄主体）。参考图**拷贝入库**（`~/.config/wudaozi/assets/`，`WUDAOZI_ASSETS_DIR` 覆盖），原文件删除不影响引用；单次引用上限 4 张，超限显式告警截断。
-- `doctor.py` 只读（不调 API、不跑推理）；退出码 1 仅表示"没有任何可用能力"（无 key 且 boogu 不可用），单项缺失在矩阵里逐项标 ✗ 与原因。
 
 ### 4D · Image Understanding (`scripts/vision.py`)
 
@@ -351,6 +336,21 @@ video.py async flow: POST `/v1/videos` to create task, get `video_id` → poll `
 > - **num_frames must be 8n+1** (81/121/241/441), ≤441; frame_rate 1-60. Entry validation rejects to avoid server 400. Use `--duration` presets for automatic compliance.
 > - **ti2vid `--image` / multi·keyframes `--images` only accept public http(s) URLs** (explicitly documented, video generation does not support base64) — local images must be uploaded to image hosting/OSS first. Upload target is **user-specified** (自有 OSS/图床), wudaozi 不默认第三方图床、不自动上传；URL 必须免登录可访问（带鉴权 = 静默失败源）。multi/keyframes require ≥2 URLs (single image uses ti2vid).
 > - Video generation is slow, `--max-wait` defaults to 1200s (covers longest 18s video generation time); on timeout do **not** re-submit — resume with `--resume <video_id>` from the `WUDAOZI_RESUME=` stdout line (re-submitting may double-bill, the task may still be running).
+
+### 4F · 资产库与就绪自检 (`scripts/assets.py` / `scripts/doctor.py`)
+
+```bash
+# 角色/画风资产：钉住满意的图，ti2i 用 --ref 复用（免每次重述外观）
+python3 scripts/assets.py add hero --kind character --from-last   # 最近一次生成直接钉（生成→喜欢→钉住→复用）
+python3 scripts/assets.py add ink --kind style --ref ref.png      # 画风资产：只借美学勿抄主体
+python3 scripts/assets.py list                                    # show <name> / remove <name>
+
+# 就绪自检：一条命令报告 key 存在性/boogu 栈(venv/GPU/模型)/能力×provider 矩阵/默认路由结论
+python3 scripts/doctor.py
+```
+
+- kind 语义与 `--ref-role` 对齐：**character → subject**（参考图即角色本人，复现同一角色）、**style → style**（只借画风勿抄主体）。参考图**拷贝入库**（`~/.config/wudaozi/assets/`，`WUDAOZI_ASSETS_DIR` 覆盖），原文件删除不影响引用；单次引用上限 4 张，超限显式告警截断。
+- `doctor.py` 只读（不调 API、不跑推理）；退出码 1 仅表示"没有任何可用能力"（无 key 且 boogu 不可用），单项缺失在矩阵里逐项标 ✗ 与原因。
 
 ---
 
@@ -449,5 +449,5 @@ python3 scripts/boogu.py  __selfcheck__   # Image generation boogu: matrix looku
 python3 scripts/vision.py __selfcheck__   # Image understanding: dual provider table + data URI + OCR 参数 + grounding 清洗
 python3 scripts/video.py  __selfcheck__   # Video generation: 8n+1 rule + resolution/duration presets + key existence
 python3 scripts/doctor.py                 # 就绪自检：key/boogu 栈/能力×provider 矩阵/默认路由（只读）
-python3 -m pytest scripts/               # Full unit tests (5 scripts + shared modules, no real API/model calls)
+python3 -m pytest scripts/               # Full unit tests (7 scripts + shared modules, no real API/model calls)
 ```

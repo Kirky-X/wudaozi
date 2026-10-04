@@ -65,7 +65,7 @@ npx skills add Kirky-X/wudaozi --agent claude-code -y
 
 | 依赖 | 说明 |
 | ---- | ---- |
-| Python 3 | 5 个脚本仅用标准库，零第三方依赖 |
+| Python 3 | 7 个 CLI 脚本仅用标准库，零第三方依赖 |
 | API Key（云端） | `export AGNES_API_KEY=agn-xxx`（agnes-ai.com）；`export AIPING_API_KEY=QC-xxx`（aiping.cn，kolors 文生图 / DeepSeek-OCR-2） |
 | GPU + 本地模型（boogu 实际出图） | 需 CUDA 机器并下载模型到 `~/software/Boogu-Image/models/`，模型清单与下载指引见 [references/boogu-guide.md](references/boogu-guide.md)；无 GPU 只能 `--dry-run` |
 
@@ -101,7 +101,7 @@ python3 scripts/video.py  __selfcheck__   # → self-check PASS
 
 # 单元测试（mock 网络层，无真实 API/模型调用）
 python3 -m pytest scripts/ -q
-# → 246 passed
+# → 385 passed
 python3 -m pytest tests/ -q
 # → 114 passed, 2 subtests passed
 ```
@@ -112,8 +112,6 @@ CI 在 push/PR 时跑 3 个 Python 版本（3.10/3.11/3.12）矩阵的同一套�
 
 ```
 wudaozi/
-├── SKILL.md                     # 能力×provider 矩阵 + 路由 + 完整流程
-├── skill.json                   # 元数据（name/version/tag）
 ├── SKILL.md                     # 能力×provider 矩阵 + 路由 + 完整流程
 ├── skill.json                   # 元数据（name/version/tag）
 ├── evals/                       # 触发回归评估集（20 查询 60/40 切分 + 评审协议）
@@ -127,7 +125,8 @@ wudaozi/
 │   ├── video.py                 # 视频生成（异步轮询 + 分类重试 + --resume）
 │   ├── assets.py                # 角色/画风资产库（add/list/show/remove + --from-last）
 │   ├── doctor.py                # 就绪自检（key/boogu 栈/能力×provider 矩阵/路由结论）
-│   └── test_*.py                # 单元测试（10 个文件，365+ 用例）
+│   ├── skill_lint.py            # skill 仓工程基线 lint（frontmatter/引用链接/JSON 资产/版本一致性等门禁）
+│   └── test_*.py                # 单元测试（10 个文件，385 用例）
 ├── references/
 │   ├── prompt-template.md       # 结构化 prompt 模板 + ref-role/变体语法 + JSON 结构块
 │   ├── video-prompt-guide.md    # 视频提示词指南（5 段式/运镜库/多镜头规划）

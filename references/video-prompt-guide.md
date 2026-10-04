@@ -66,9 +66,9 @@ Quality: cinematic realism, high dynamic range, fine film grain
 5-8s: 起身走向残骸，镜头跟随，渐远收尾
 ```
 
-逐秒（3-8s 视频）或逐镜（multi/keyframes）。每条只写"谁在动 + 怎么动 + 镜头怎么动"，不要在这里重复 Stage 2/3 已锚定的外观描述。
+逐秒（3/5/10/18s 视频）或逐镜（multi/keyframes）。每条只写"谁在动 + 怎么动 + 镜头怎么动"，不要在这里重复 Stage 2/3 已锚定的外观描述。
 
-### 完整示例（agnes-video t2vid，8s 由 241 帧 @24fps 组合）
+### 完整示例（agnes-video t2vid，10s 由 241 帧 @24fps 组合）
 
 ```
 科幻短片 | 沙漠星球 | 孤独宇航员 | 电影感
@@ -83,7 +83,8 @@ Quality: cinematic realism, high dynamic range, fine film grain
 一致性: 人物面部与服装全程不变
 0-3s: 宇航员跪地检查头盔，镜头由远推进至半身
 3-5s: 抬头望向残骸，风掀起尘土
-5-8s: 起身走向残骸，镜头跟随，渐远收尾
+5-8s: 起身走向残骸，镜头跟随
+8-10s: 镜头缓缓拉远，身影渐小，渐远收尾
 ```
 
 （执行命令里配 `--aspect 16:9 --duration 10s`——分辨率与时长走 flags，不进上面的 instruction。）

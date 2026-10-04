@@ -318,7 +318,7 @@ Fill rules: `type/platform` 锚定用途与画幅 → `layout` 每个区域写�
 - [ ] Are all 7 dimensions complete? Which dimensions used defaults, and do they need user confirmation?
 - [ ] Are users' specified hard constraints (specific color, composition, person) included?
 - [ ] Is the intended medium consistent (photography ≠ painting ≠ 3D)?
-- [ ] Is the length between 30-400 characters? (Too short = insufficient info, too long = model diverges; hard limit enforced by boogu.py)
+- [ ] Is the length between 30-400 characters? (Too short = insufficient info, too long = model diverges; recommended range — boogu.py prints a `[WARN]` outside it and continues, it does not reject)
 - [ ] Are negative prompts filled with general items?
 
 ---

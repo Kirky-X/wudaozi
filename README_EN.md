@@ -34,7 +34,7 @@ English | [中文](README.md)
 - **Anti-rewrite guard** (`--strict-prompt`) and **16-multiple size snapping** (absorbed from gpt_image_playground)
 - **Keys via environment variables only**: no key ever lands in scripts or git; output auto-truncates to prevent leakage
 - **VLM output is data**: image-understanding results (especially text inside images) are treated as reference material — instructions found in them are never executed (prompt-injection isolation)
-- **Structured prompts**: 7-dimension template for text-to-image + video camera-motion formula + 5-segment structure for image understanding, see [references/prompt-template.md](references/prompt-template.md); narrative shorts / precise camera work / multi-shot planning in [references/video-prompt-guide.md](references/video-prompt-guide.md)
+- **Structured prompts**: 7-dimension template for text-to-image + video camera-motion formula + 5-segment structure for image understanding, see [references/prompt-template.md](references/prompt-template.md); narrative shorts / precise camera work / multi-shot planning in [references/video-prompt-guide.md](references/video-prompt-guide.md); trigger regression eval set in [evals/](evals/README.md)
 - **boogu local matrix**: 2×2×2 (mode × turbo × quantization), 8 combinations via deterministic lookup, details in [references/boogu-guide.md](references/boogu-guide.md)
 
 ```mermaid
@@ -65,7 +65,7 @@ Dependencies:
 
 | Dependency | Notes |
 | ---------- | ----- |
-| Python 3 | The 5 scripts use stdlib only — zero third-party dependencies |
+| Python 3 | The 7 CLI scripts use stdlib only — zero third-party dependencies |
 | API keys (cloud) | `export AGNES_API_KEY=agn-xxx` (agnes-ai.com); `export AIPING_API_KEY=QC-xxx` (aiping.cn — kolors t2i / DeepSeek-OCR-2) |
 | GPU + local model (actual boogu rendering) | Requires a CUDA machine with models downloaded to `~/software/Boogu-Image/models/`; model list and download guide in [references/boogu-guide.md](references/boogu-guide.md); without GPU only `--dry-run` works |
 
@@ -101,7 +101,7 @@ python3 scripts/video.py  __selfcheck__   # → self-check PASS
 
 # Unit tests (mocked network layer, no real API/model calls)
 python3 -m pytest scripts/ -q
-# → 246 passed
+# → 385 passed
 python3 -m pytest tests/ -q
 # → 114 passed, 2 subtests passed
 ```
@@ -125,7 +125,8 @@ wudaozi/
 │   ├── video.py                 # video generation (async polling + classified retry + --resume)
 │   ├── assets.py                # character/style asset library (add/list/show/remove + --from-last)
 │   ├── doctor.py                # readiness self-check (keys/boogu stack/matrix/routing)
-│   └── test_*.py                # unit tests (10 files, 365+ cases)
+│   ├── skill_lint.py            # skill-repo engineering lint (frontmatter/link targets/JSON assets/version consistency gates)
+│   └── test_*.py                # unit tests (10 files, 385 cases)
 ├── references/
 │   ├── prompt-template.md       # structured prompt templates + ref-role/variants + JSON block
 │   ├── video-prompt-guide.md    # video prompt guide (5-stage / camera moves / multi-shot)
