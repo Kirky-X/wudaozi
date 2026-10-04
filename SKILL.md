@@ -3,7 +3,7 @@ name: wudaozi
 description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding (VLM/OCR), video generation (t2v/i2v/multi-image/keyframes). Triggers: text-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image/character sheet; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Providers: images via agnes cloud/boogu local/kolors (t2i only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0; keys via environment variables."
 license: MIT
 metadata:
-  version: "0.3.2"
+  version: "0.3.3"
   author: "Kirky-X"
   repo: "https://github.com/Kirky-X/wudaozi"
   tags: "text-to-image, image-to-image, image-understanding, video-generation, boogu, agnes, kolors, deepseek-ocr, vlm, cloud-provider, local-provider, prompt-engineering, image-generation, ip-character, product-image, logo, illustration, multi-image-video, keyframes"
