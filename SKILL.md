@@ -1,6 +1,6 @@
 ---
 name: wudaozi
-description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding (VLM/OCR), video generation (t2v/i2v/multi-image/keyframes). Triggers: text-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image/character sheet; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Providers: images via agnes cloud/boogu local/kolors (t2i only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0; keys via environment variables."
+description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding (VLM/OCR), video generation (t2v/i2v/multi-image/keyframes). Triggers: text-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image/character sheet; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Providers: images via agnes cloud/boogu local/kolors (t2i only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0; keys via environment variables. Boundary: video/photo GENERATION lives here, but text storyboard scripts & Excalidraw diagrams → cangjie; UI design reviews → maliang/diting; brand guideline boards → brandkit; vector logo files & icon asset sourcing → xizhi."
 license: MIT
 metadata:
   version: "0.3.3"
@@ -406,7 +406,7 @@ These three are **specialized subtasks of t2i**, using the same image generation
 | "Product image / derivative / merch visual" | Product derivative | prompt-template.md § product | t2i, `--aspect 4:3` or `1:1`, centered display |
 | "角色定妆照 / character sheet / turnaround / 让角色进场景动起来" | Character consistency | [character-sheet-workflow.md](references/character-sheet-workflow.md) | 三段管线：t2i 定妆 → ti2i 静帧（`--ref hero`）→ ti2vid |
 
-> ⚠️ Image generation models are for **image generation**, not strong at logo/icon graphic design (precise geometry, vector text). Output is "illustration-style logo/character", **not usable vector design files**. For precise vector logos → use specialized design tools, don't force generation.
+> ⚠️ Image generation models are for **image generation**, not strong at logo/icon graphic design (precise geometry, vector text). Output is "illustration-style logo/character", **not usable vector design files**. For precise vector logos → xizhi（矢量图标与资产选型）, don't force generation.
 
 ---
 
