@@ -325,7 +325,7 @@ Fill rules: `type/platform` 锚定用途与画幅 → `layout` 每个区域写�
 
 ## Video Generation (video) — Dynamic, not static
 
-> Video prompt mindset **differs from image generation**: image generation describes "a single moment", video describes "evolution over time". The core is "subject moves + camera moves + what stays stable". Works with agnes-video-v2.0.
+> Video prompt mindset **differs from image generation**: image generation describes "a single moment", video describes "evolution over time". The core is "subject moves + camera moves + what stays stable". Works with agnes-video-2.5-flash.
 
 ### Core Formula (text-to-video)
 
@@ -369,7 +369,7 @@ Example: "Animate the character with subtle breathing motion, hair moving gently
 
 ## Image Understanding (vision) — Role + Task + Output format
 
-> Understanding/OCR prompt mindset **differs from generation**: instead of describing a scene, it **gives the model a role + clear task + specified output format**. Works with both agnes-2.0-flash and DeepSeek-OCR-2.
+> Understanding/OCR prompt mindset **differs from generation**: instead of describing a scene, it **gives the model a role + clear task + specified output format**. Works with both agnes-2.5-flash and DeepSeek-OCR-2.
 
 ### Core Formula
 
@@ -405,7 +405,7 @@ Example: "You are an image analysis assistant. Analyze the provided image, summa
 - **URLs must be publicly accessible**: URLs requiring login/authentication/hotlink protection cannot be read by models (usually no error, just returns "unable to recognize" or guessed content)
 - **Local images use base64**: vision.py automatically converts to data URI, bypassing public access restrictions (both agnes/aiping accept data URI in practice)
 - **Standard formats**: JPG/JPEG/PNG/WebP; for screenshots/UI images, it's recommended to add text description in the prompt to specify focus areas
-- **Provider selection**: OCR/formulas/problem solving → aiping DeepSeek-OCR-2; general descriptions/UI analysis → agnes-2.0-flash
+- **Provider selection**: OCR/formulas/problem solving → aiping DeepSeek-OCR-2; general descriptions/UI analysis → agnes-2.5-flash
 
 ### DeepSeek-OCR-2 官方 prompt（模型只认两条主提示）
 

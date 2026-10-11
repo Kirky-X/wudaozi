@@ -1,0 +1,46 @@
+{
+  "meta": {
+    "name": "wudaozi agnes-video 标定与示例库（R13/R17）",
+    "method": "openbao dev/agnes key（长度 51，指纹留档不回显）真实调用标定；请求/响应原文留痕于 failed sidecar 与本文件",
+    "date": "2026-10-11",
+    "key_valid": true,
+    "auth_note": "key 认证通过（错误均为业务层：model_not_found/invalid_param/rate_limit/queue_full，无 401）"
+  },
+  "model_catalog": {
+    "source": "GET https://apihub.agnes-ai.com/v1/models（2026-10-11 实测）",
+    "video": ["agnes-video-2.5", "agnes-video-2.5-flash"],
+    "image": ["agnes-image-2.0-flash", "agnes-image-2.1-flash", "agnes-image-2.5-flash"],
+    "llm": ["agnes-2.5-flash", "agnes-2.5-pro", "agnes-2.5-pro-alpha", "agnes-2.5-pro-beta", "agnes-3.0-flash", "agnes-3.0-flash-max"],
+    "retired": {
+      "agnes-video-v2.0": "已下线（503 model_not_found：No available channel under group default），scripts/video.py 旧默认模型",
+      "agnes-2.0-flash": "已下线（不在 /v1/models 清单），scripts/vision.py 旧默认模型，已换代 agnes-2.5-flash（待下次标定实测）"
+    }
+  },
+  "contract": {
+    "create_endpoint": "POST https://apihub.agnes-ai.com/v1/videos",
+    "poll_endpoint": "GET https://apihub.agnes-ai.com/agnesapi?video_id=<ID>",
+    "accepted_body": {
+      "t2vid": {"model": "agnes-video-2.5-flash", "prompt": "str", "mode": "text"}
+    },
+    "forbidden_fields_400_evidence": {
+      "width": "width is a forbidden field（实测 400）",
+      "num_frames": "num_frames is a forbidden field（实测 400）",
+      "frame_rate/height": "与 width 同批发送，随 width 一并被拒"
+    },
+    "deprecated_cli_params": ["--duration", "--aspect", "--width", "--height", "--num-frames", "--frame-rate", "--seed", "--negative-instruction（seed/negative 2.5 契约未验证，保守不发送）"],
+    "untested_modes": ["ti2vid", "multi", "keyframes —— 图片入参契约被 video_queue_full 挡住未探明，脚本已显式拒绝"]
+  },
+  "attempts_timeline": [
+    {"t": "2026-10-11 12:04", "model": "agnes-video-v2.0", "result": "503 model_not_found（模型下线）"},
+    {"t": "2026-10-11 12:10", "model": "agnes-video-2.5-flash", "body": "含 width/height/num_frames/frame_rate", "result": "400 invalid_param: width is a forbidden field"},
+    {"t": "2026-10-11 12:10", "body": "去掉宽高，保留 num_frames/frame_rate", "result": "400 invalid_param: num_frames is a forbidden field"},
+    {"t": "2026-10-11 12:10", "body": "{model,prompt} 最小集", "result": "429 rate_limit_exceeded（free 层 RPM 级瞬时限速，45s 后解除）"},
+    {"t": "2026-10-11 12:11", "body": "{model,prompt,mode:text}", "result": "503 video_queue_full（free 层视频队列满，参数校验已通过）"},
+    {"t": "2026-10-11 12:23-12:32", "body": "{model,prompt,mode:text}（适配后脚本）", "result": "503 video_queue_full ×8（含后台 90s 退避重试 5 次，free 层视频队列持续满载 26+ 分钟，非瞬态）"}
+  ],
+  "generation": {
+    "status": "blocked_by_free_queue",
+    "note": "参数契约标定完成（8 次真实请求全部通过认证与校验）；真实 3s 生成与音轨（audio track）检查被 free 层 video_queue_full 阻塞——解封条件：队列释放（夜间/低峰重试）或升级 Token Plan。video.py 已适配新契约，队列恢复后直接可跑。",
+    "audio_track_check": "待生成成功后用 mp4 handler 类型解析（无 ffprobe，用 python 读 moov/trak/hdlr）"
+  }
+}

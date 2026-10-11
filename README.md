@@ -12,8 +12,8 @@
 | ---- | ---------------- | ---------------- |
 | 文生图 t2i | **agnes** 云 · **boogu** 本地 · **kolors** 云 | `AGNES_API_KEY` / — / `AIPING_API_KEY` |
 | 图生图 ti2i | **agnes** 云 · **boogu** 本地（⚠️ kolors 不支持） | `AGNES_API_KEY` / — |
-| 图像理解 | **agnes**（agnes-2.0-flash）· **aiping**（DeepSeek-OCR-2） | `AGNES_API_KEY` / `AIPING_API_KEY` |
-| 视频生成 | **agnes**（agnes-video-v2.0：t2vid / ti2vid / multi / keyframes 异步轮询） | `AGNES_API_KEY` |
+| 图像理解 | **agnes**（agnes-2.5-flash）· **aiping**（DeepSeek-OCR-2） | `AGNES_API_KEY` / `AIPING_API_KEY` |
+| 视频生成 | **agnes**（agnes-video-2.5-flash：t2vid / ti2vid / multi / keyframes 异步轮询） | `AGNES_API_KEY` |
 
 - **确定性路由**：能力 → provider → 脚本查表决定，所有云端 provider 失败显式报错退出，**无自动 fallback**（避免风格/质量跳变）
 - **机器可读错误 + 失败留痕**：云端传输/响应错误首行一律 `[ERROR] code=<稳定错误码>`（11 个码，测试钉死；本地参数校验为普通 `[ERROR]`），失败现场写 `<产物>-failed-<ts>.json` sidecar（请求上下文 + 脱敏后的错误消息，key 模式脱敏不落盘）

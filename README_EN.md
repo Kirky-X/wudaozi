@@ -12,8 +12,8 @@ English | [中文](README.md)
 | ---------- | ------------------ | ------------- |
 | Text-to-image t2i | **agnes** cloud · **boogu** local · **kolors** cloud | `AGNES_API_KEY` / — / `AIPING_API_KEY` |
 | Image-to-image ti2i | **agnes** cloud · **boogu** local (⚠️ kolors unsupported) | `AGNES_API_KEY` / — |
-| Image understanding | **agnes** (agnes-2.0-flash) · **aiping** (DeepSeek-OCR-2) | `AGNES_API_KEY` / `AIPING_API_KEY` |
-| Video generation | **agnes** (agnes-video-v2.0: t2vid / ti2vid / multi / keyframes async polling) | `AGNES_API_KEY` |
+| Image understanding | **agnes** (agnes-2.5-flash) · **aiping** (DeepSeek-OCR-2) | `AGNES_API_KEY` / `AIPING_API_KEY` |
+| Video generation | **agnes** (agnes-video-2.5-flash: t2vid / ti2vid / multi / keyframes async polling) | `AGNES_API_KEY` |
 
 - **Deterministic routing**: capability → provider → script decided by lookup table; every cloud provider failure exits with an explicit error, **no automatic fallback** (avoids style/quality jumps)
 - **Machine-readable errors + failure tracing**: every cloud transport/response error starts with `[ERROR] code=<stable code>` (11 codes, pinned by tests; local argument validation uses plain `[ERROR]`); the failure site is written to `<output>-failed-<ts>.json` sidecar (request context + secret-masked error message)

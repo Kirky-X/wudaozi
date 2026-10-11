@@ -1,9 +1,9 @@
 ---
 name: wudaozi
-description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding (VLM/OCR), video generation (t2v/i2v/multi-image/keyframes). Triggers: text-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image/character sheet; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Providers: images via agnes cloud/boogu local/kolors (t2i only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0; keys via environment variables. Boundary: video/photo GENERATION lives here, but text storyboard scripts & Excalidraw diagrams → cangjie; UI design reviews → maliang/diting; brand guideline boards → references/brand-board.md (internalized); vector logo files & icon asset sourcing → xizhi."
+description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding (VLM/OCR), video generation (t2v/i2v/multi-image/keyframes). Triggers: text-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image/character sheet; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Providers: images via agnes cloud/boogu local/kolors (t2i only), understanding via agnes-2.5-flash/aiping DeepSeek-OCR-2, video via agnes-video-2.5-flash; keys via environment variables. Boundary: video/photo GENERATION lives here, but text storyboard scripts & Excalidraw diagrams → cangjie; UI design reviews → maliang/diting; brand guideline boards → references/brand-board.md (internalized); vector logo files & icon asset sourcing → xizhi."
 license: MIT
 metadata:
-  version: "0.3.6"
+  version: "0.3.7"
   author: "Kirky-X"
   repo: "https://github.com/Kirky-X/wudaozi"
   tags: "text-to-image, image-to-image, image-understanding, video-generation, boogu, agnes, kolors, deepseek-ocr, vlm, cloud-provider, local-provider, prompt-engineering, image-generation, ip-character, product-image, logo, illustration, multi-image-video, keyframes"
@@ -19,8 +19,8 @@ Transforms users' vague media requirements into executable commands: **Select ca
 |------------|------------------|-------------------|---------------------------|
 | Text-to-image t2i | draw/generate/AI drawing/output image | **agnes** cloud · **boogu** local · **kolors** cloud (aiping) | `AGNES_API_KEY` / — / `AIPING_API_KEY` |
 | Image-to-image ti2i | edit image/change background/add elements/edit this | **agnes** cloud · **boogu** local (⚠️ kolors **does not support** ti2i) | `AGNES_API_KEY` / — |
-| Image understanding | see image/recognize image/what's in this image/solve problem/OCR | **agnes** (agnes-2.0-flash) · **aiping** (DeepSeek-OCR-2) | `AGNES_API_KEY` / `AIPING_API_KEY` |
-| Video generation | generate video/text-to-video/image-to-video/multi-image/keyframes | **agnes** (agnes-video-v2.0: t2vid/ti2vid/multi/keyframes async polling) | `AGNES_API_KEY` |
+| Image understanding | see image/recognize image/what's in this image/solve problem/OCR | **agnes** (agnes-2.5-flash) · **aiping** (DeepSeek-OCR-2) | `AGNES_API_KEY` / `AIPING_API_KEY` |
+| Video generation | generate video/text-to-video/image-to-video/multi-image/keyframes | **agnes** (agnes-video-2.5-flash: t2vid/ti2vid/multi/keyframes async polling) | `AGNES_API_KEY` |
 
 > 🔴 **CHECKPOINT · Capability boundary**: This skill **only handles generation and understanding**. Video/audio editing, 3D models, PS-like fine retouching (matting/color grading/compositing) are **out of scope** — don't force these onto generation models.
 
@@ -161,7 +161,7 @@ Higher quality questions use **5-segment structure**: `[Role] + [Task] + [Contex
 | Detail description | "What are the clothing, expression, and actions of people in the image" |
 | Comparative analysis | "What are the differences between this image and typical XX" |
 
-> aiping `DeepSeek-OCR-2` excels at **OCR/formulas/problem solving**; agnes-2.0-flash is more balanced for **general descriptions**. Choose provider by use case.
+> aiping `DeepSeek-OCR-2` excels at **OCR/formulas/problem solving**; agnes-2.5-flash is more balanced for **general descriptions**. Choose provider by use case.
 >
 > **DeepSeek-OCR-2 官方 prompt**（deepseek-ai/DeepSeek-OCR-2 README，模型只认两条主提示）：通用识别用 `<image>\nFree OCR.`；版面级文档转 markdown 用 `<image>\n<|grounding|>Convert the document to markdown.`。经 OpenAI 兼容接口调用时 `<image>` 占位由 image_url 部分承担，文本部分写 `Free OCR.` 或 `<|grounding|>Convert the document to markdown.`。**网关透传已实测**（2026-10-02，aiping）：`temperature` 字段真实生效（0 输出确定性复现；5.0 产生高温乱码且网关不做上限校验），官方 prompt 措辞直接可用，`finish_reason` 正常返回。解码参数对齐官方参考实现：temperature=0（禁随机采样）+ max_tokens=8192（防静默截断，`finish_reason=length` 有显式告警）。
 >
