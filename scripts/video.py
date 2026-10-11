@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""wudaozi —— agnes-video-v2.0 视频生成包装脚本（异步任务 + 轮询）。
+"""wudaozi —— agnes-video-2.5-flash 视频生成包装脚本（异步任务 + 轮询）。
 
 支持四种模式：
 - t2vid（文生视频）：prompt → 视频
@@ -14,17 +14,15 @@
 4. 下载返回的 mp4 到本地
 5. 错误显式报错，不 fallback
 
-⚠️ num_frames 须满足 8n+1 规则（如 81/121/241/441），≤441；frame_rate 1-60。
-   ti2vid 的 image 参数只接受公网 URL（文档明确，不支持 base64）。
+⚠️ 2.5 代契约（2026-10-11 实测标定）：创建请求只接受 model/prompt/mode；
+   分辨率/时长/帧率由服务端决定，宽高/帧数/帧率字段一律 forbidden。
+   ti2vid/multi/keyframes 的图片入参契约未实测（服务端队列满挡住探测），暂不支持。
 
 使用：
     AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "猫在沙滩走，电影感"
-    AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --duration 10s --aspect 16:9
-    AGNES_API_KEY=agn-xxx python3 video.py ti2vid -i "镜头推进" --image https://x/a.png
     AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --dry-run
 """
 # ponytail: 异步轮询是确定性逻辑（固定 interval + deadline），不交给模型决策（规则5）。
-# num_frames 8n+1 是模型硬约束，入口校验拒绝，避免服务端 400。
 
 import argparse
 import json
@@ -70,7 +68,7 @@ def _full_jitter(attempt: int) -> float:
 
 CREATE_ENDPOINT = "https://apihub.agnes-ai.com/v1/videos"
 POLL_ENDPOINT = "https://apihub.agnes-ai.com/agnesapi"
-MODEL = "agnes-video-v2.0"
+MODEL = "agnes-video-2.5-flash"
 TIMEOUT = 60           # 创建任务用（POST 秒级返回，60s 充分）
 POLL_TIMEOUT = 30      # 单次轮询用（poll 接口秒级，30s 给 max_wait 留足轮询次数）
 DOWNLOAD_TIMEOUT = 300  # mp4 下载（大视频给足余量）
@@ -84,52 +82,6 @@ RESOLUTIONS = {
     "3:4": (768, 1024),   # 竖版
 }
 
-# 时长预设（num_frames, frame_rate），均满足 8n+1
-DURATIONS = {
-    "3s": (81, 24),
-    "5s": (121, 24),
-    "10s": (241, 24),
-    "18s": (441, 24),
-}
-
-
-def validate_num_frames(n: int) -> None:
-    """num_frames 硬约束：≤441 且 8n+1。违反即 sys.exit。"""
-    if n > 441:
-        sys.exit(f"[ERROR] num_frames {n} > 441 上限")
-    if (n - 1) % 8 != 0:
-        sys.exit(
-            f"[ERROR] num_frames {n} 不符合 8n+1 规则（可选 {list(DURATIONS.values())}）"
-        )
-
-
-def validate_frame_rate(fr: int) -> None:
-    if not (1 <= fr <= 60):
-        sys.exit(f"[ERROR] frame_rate {fr} 不在 1-60 范围")
-
-
-def resolve_resolution(a: argparse.Namespace) -> tuple:
-    """aspect > width/height（须同传）> 默认 16:9 (1152x768)。"""
-    if a.aspect:
-        return RESOLUTIONS[a.aspect]
-    if (a.width is None) != (a.height is None):
-        sys.exit("[ERROR] --width 与 --height 必须同时提供；单传请改用 --aspect 预设")
-    if a.width and a.height:
-        return a.width, a.height
-    return RESOLUTIONS["16:9"]
-
-
-def resolve_frames(a: argparse.Namespace) -> tuple:
-    """num_frames/frame_rate（自定义，校验 8n+1）> duration 预设 > 默认 5s。"""
-    if a.num_frames is not None:
-        validate_num_frames(a.num_frames)
-        fr = a.frame_rate if a.frame_rate is not None else 24
-        validate_frame_rate(fr)
-        return a.num_frames, fr
-    if a.duration:
-        return DURATIONS[a.duration]
-    return DURATIONS["5s"]
-
 
 def resolve_output(a: argparse.Namespace, width: int, height: int) -> Path:
     """输出：默认 $PWD/video-output/，文件名含 mode+尺寸+时间戳+uuid8。"""
@@ -142,46 +94,21 @@ def resolve_output(a: argparse.Namespace, width: int, height: int) -> Path:
     return out_dir / f"agnes_video_{a.mode}_{width}x{height}_{ts}_{suffix}.mp4"
 
 
-def build_body(
-    a: argparse.Namespace, width: int, height: int, num_frames: int, frame_rate: int
-) -> dict:
-    """组装创建任务请求体。"""
+def build_body(a: argparse.Namespace) -> dict:
+    """组装创建任务请求体（agnes-video-2.5 契约，2026-10-11 实测标定）：
+    仅接受 model/prompt/mode；width/height/num_frames/frame_rate 均为
+    forbidden field（HTTP 400 逐字段实证）。ti2vid/multi/keyframes 的图片
+    入参契约被服务端队列满挡住未探明，显式拒绝，防止把 forbidden 字段发上线。"""
+    if a.mode != "t2vid":
+        sys.exit(
+            f"[ERROR] 2.5 代 API 的 {a.mode} 请求契约未实测（视频生成队列满挡住探测），"
+            "本版仅支持 t2vid；t2vid 的 mode 字段取值 text 已实测"
+        )
     body: dict = {
         "model": MODEL,
         "prompt": a.instruction,
-        "width": width,
-        "height": height,
-        "num_frames": num_frames,
-        "frame_rate": frame_rate,
+        "mode": "text",
     }
-    if a.image and a.images:
-        sys.exit(
-            "[ERROR] --image 与 --images 互斥（ti2vid 用 --image，multi/keyframes 用 --images）"
-        )
-    if a.mode == "ti2vid":
-        if not a.image:
-            sys.exit("[ERROR] 图生视频(ti2vid)必须提供 --image 公网 URL")
-        _assert_public_url(a.image, "ti2vid --image")
-        body["image"] = a.image
-    elif a.mode in ("multi", "keyframes"):
-        # multi 多图融合 / keyframes 关键帧过渡 —— 官方走 extra_body.image 数组
-        if not a.images or len(a.images) < 2:
-            sys.exit(
-                f"[ERROR] {a.mode} 至少需要 2 张公网图 URL（--images，空格分隔）\n"
-                "  → 单张图请改用 ti2vid"
-            )
-        for u in a.images:
-            _assert_public_url(u, f"{a.mode} --images")
-        # multi：不带 mode 字段（agnes 靠 extra_body.image 数组 + 无 mode 区分）
-        # keyframes：显式 mode=keyframes（帧间过渡）
-        extra = {"image": list(a.images)}
-        if a.mode == "keyframes":
-            extra["mode"] = "keyframes"
-        body["extra_body"] = extra
-    if a.seed is not None:
-        body["seed"] = a.seed
-    if a.negative_instruction:
-        body["negative_prompt"] = a.negative_instruction
     return body
 
 
@@ -336,75 +263,30 @@ def to_curl(body: dict, api_key: str) -> str:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="video.py",
-        description="wudaozi —— agnes-video-v2.0 视频生成（文生视频/图生视频，异步轮询）",
+        description="wudaozi —— agnes-video-2.5-flash 视频生成（文生视频/图生视频，异步轮询）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 示例：
-  # 文生视频，5s，16:9（默认）
+  # 文生视频（2.5 代：分辨率/时长/帧率由服务端决定）
   AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "猫在沙滩走，电影感，暖光"
-
-  # 10s 横版 + 反向提示
-  AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --duration 10s --aspect 16:9 \\
-      --negative-instruction "模糊, 变形"
-
-  # 图生视频（首帧图必须是公网 URL）
-  AGNES_API_KEY=agn-xxx python3 video.py ti2vid -i "镜头缓慢推进" --image https://x/a.png
-
-  # 多图融合（multi）/ 关键帧过渡（keyframes）：至少 2 张公网图
-  AGNES_API_KEY=agn-xxx python3 video.py multi -i "从场景 A 平滑变到场景 B" \\
-      --images https://x/a.png https://x/b.png
-  AGNES_API_KEY=agn-xxx python3 video.py keyframes -i "保持人物一致，视角推近" \\
-      --images https://x/a.png https://x/b.png
 
   # 只看 curl 不真调
   AGNES_API_KEY=agn-xxx python3 video.py t2vid -i "..." --dry-run
 
-时长预设: """
-        + ", ".join(f"{k}={v[0]}帧/{v[1]}fps" for k, v in DURATIONS.items())
-        + "\n分辨率预设: "
-        + ", ".join(f"{k}={v[0]}x{v[1]}" for k, v in RESOLUTIONS.items()),
+  # 图生视频（ti2vid）/ 多图融合（multi）/ 关键帧过渡（keyframes）：
+  # 2.5 代图片入参契约未实测（2026-10-11 队列满挡住探测），暂不支持，传入即报错。
+
+⚠️ 1.x 遗留参数 --duration/--aspect/--width/--height/--num-frames/--frame-rate
+   已删除：2.5 API 对这些字段返回 forbidden field。
+""",
     )
     p.add_argument(
         "mode",
         choices=["t2vid", "ti2vid", "multi", "keyframes"],
-        help="t2vid=文生视频, ti2vid=图生视频(单图首帧), multi=多图融合, keyframes=关键帧过渡",
+        help="t2vid=文生视频(2.5 已实测), ti2vid/multi/keyframes=契约未实测暂不支持",
     )
     p.add_argument(
         "--instruction", "-i", default=None, help="视频内容描述（--resume 续查时可不填）"
-    )
-    p.add_argument(
-        "--image", default=None, help="ti2vid 首帧图公网 URL（ti2vid 必填）"
-    )
-    p.add_argument(
-        "--images",
-        nargs="+",
-        default=None,
-        help="multi/keyframes 多张公网图 URL（至少 2 张，空格分隔）",
-    )
-    p.add_argument(
-        "--aspect",
-        choices=list(RESOLUTIONS),
-        help="分辨率预设（优先于 --width/--height）",
-    )
-    p.add_argument(
-        "--duration",
-        choices=list(DURATIONS),
-        help="时长预设（优先级低于 --num-frames）",
-    )
-    p.add_argument("--width", type=int, default=None, help="视频宽度（须与 --height 同传）")
-    p.add_argument("--height", type=int, default=None, help="视频高度（须与 --width 同传）")
-    p.add_argument(
-        "--num-frames",
-        type=int,
-        default=None,
-        help="自定义帧数（须 8n+1，≤441；优先于 --duration）",
-    )
-    p.add_argument(
-        "--frame-rate", type=int, default=None, help="自定义帧率（1-60，默认 24）"
-    )
-    p.add_argument("--seed", type=int, default=None, help="随机种子（可复现）")
-    p.add_argument(
-        "--negative-instruction", default=None, help="反向提示（避免的内容）"
     )
     p.add_argument(
         "--poll-interval", type=int, default=10, help="轮询间隔秒（默认 10）"
@@ -413,7 +295,7 @@ def parse_args() -> argparse.Namespace:
         "--max-wait",
         type=int,
         default=1200,
-        help="最大等待秒（默认 1200=20 分钟，覆盖最长 18s 视频的生成耗时）",
+        help="最大等待秒（默认 1200=20 分钟）",
     )
     p.add_argument(
         "--output-dir", "-o", default=None, help="输出目录（默认 $PWD/video-output/）"
@@ -429,8 +311,6 @@ def parse_args() -> argparse.Namespace:
     a = p.parse_args()
     if not a.resume and not a.instruction:
         p.error("-i/--instruction 必填；续查已有任务请用 --resume <video_id>")
-    if a.resume and (a.image or a.images):
-        p.error("--resume 与 --image/--images 互斥（续查不重新提交素材）")
     if a.resume and a.dry_run:
         p.error("--resume 与 --dry-run 互斥")
     return a
@@ -454,14 +334,13 @@ def main() -> int:
         print(f"[INFO] resume video_id={video_id}（跳过创建，直接轮询）", file=sys.stderr)
         print(f"[INFO] 输出={out_path}", file=sys.stderr)
     else:
-        width, height = resolve_resolution(a)
-        num_frames, frame_rate = resolve_frames(a)
-        out_path = resolve_output(a, width, height)
-        body = build_body(a, width, height, num_frames, frame_rate)
+        out_path = resolve_output(a, *RESOLUTIONS["16:9"])
+        body = build_body(a)
 
-        secs = num_frames / frame_rate
         print(
-            f"[INFO] mode={a.mode} size={width}x{height} frames={num_frames}@{frame_rate}fps (~{secs:.1f}s)",
+            f"[INFO] mode={a.mode} model={MODEL}"
+            "（2.5 代：分辨率/时长/帧率由服务端决定；CLI 的宽高/帧数/帧率参数"
+            "为 1.x 遗留，已不发送）",
             file=sys.stderr,
         )
         print(f"[INFO] 输出={out_path}", file=sys.stderr)
@@ -511,55 +390,23 @@ def main() -> int:
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] != "__selfcheck__":
         sys.exit(main())
-    # ponytail: 自检 —— 验证纯函数 + 常量 + 8n+1 规则，不打网络。
+    # ponytail: 自检 —— 验证纯函数与 2.5 契约 body 形状，不打网络。
     from types import SimpleNamespace
 
     print("== wudaozi video self-check ==")
-    # 8n+1 规则验证所有预设
-    for dur, (nf, fr) in DURATIONS.items():
-        assert (nf - 1) % 8 == 0 and nf <= 441, dur
-        assert 1 <= fr <= 60, dur
-    # num_frames 校验
-    validate_num_frames(81)  # ok
-    assert resolve_resolution(SimpleNamespace(aspect="16:9", width=None, height=None)) == (1152, 768)
-    assert resolve_resolution(SimpleNamespace(aspect=None, width=800, height=600)) == (800, 600)
-    assert resolve_resolution(SimpleNamespace(aspect=None, width=None, height=None)) == (1152, 768)
-    nf, fr = resolve_frames(SimpleNamespace(num_frames=None, frame_rate=None, duration="10s"))
-    assert (nf, fr) == (241, 24)
-    nf2, fr2 = resolve_frames(SimpleNamespace(num_frames=161, frame_rate=30, duration=None))
-    assert (nf2, fr2) == (161, 30)  # 161 = 8*20+1 ✓
-    # body 结构
+    # 2.5 契约 body：仅 model/prompt/mode
     body = build_body(
-        SimpleNamespace(
-            mode="t2vid", instruction="测", image=None, images=None,
-            seed=42, negative_instruction="模糊",
-        ),
-        1152, 768, 121, 24,
+        SimpleNamespace(mode="t2vid", instruction="测", image=None, images=None)
     )
     assert body["model"] == MODEL
-    assert body["width"] == 1152 and body["height"] == 768
-    assert body["seed"] == 42 and body["negative_prompt"] == "模糊"
-    assert "image" not in body
-    # multi / keyframes —— extra_body.image 数组（keyframes 多 mode 字段）
-    mbody = build_body(
-        SimpleNamespace(
-            mode="multi", instruction="过渡", image=None,
-            images=["https://x/1.png", "https://x/2.png"], seed=None, negative_instruction=None,
-        ),
-        1152, 768, 121, 24,
-    )
-    assert mbody["extra_body"] == {"image": ["https://x/1.png", "https://x/2.png"]}
-    kbody = build_body(
-        SimpleNamespace(
-            mode="keyframes", instruction="过渡", image=None,
-            images=["https://x/1.png", "https://x/2.png"], seed=None, negative_instruction=None,
-        ),
-        1152, 768, 121, 24,
-    )
-    assert kbody["extra_body"] == {
-        "image": ["https://x/1.png", "https://x/2.png"], "mode": "keyframes",
-    }
-    print(f"  分辨率预设: {len(RESOLUTIONS)} 种，时长预设: {len(DURATIONS)} 种")
+    assert body["mode"] == "text"
+    assert "width" not in body and "num_frames" not in body
+    for legacy in ("ti2vid", "multi", "keyframes"):
+        try:
+            build_body(SimpleNamespace(mode=legacy, instruction="测", image=None, images=None))
+            raise AssertionError(f"{legacy} 应被拒绝（契约未实测）")
+        except SystemExit:
+            pass
     print(f"  CREATE: {CREATE_ENDPOINT}")
     print(f"  POLL: {POLL_ENDPOINT}?video_id=<ID>")
     print(f"  MODEL: {MODEL}")

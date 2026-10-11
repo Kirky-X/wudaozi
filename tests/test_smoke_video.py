@@ -30,89 +30,44 @@ def _ns(**kw):
     return SimpleNamespace(**base)
 
 
-class TestFrameConstraints(unittest.TestCase):
-    """num_frames 8n+1 且 ≤441 是模型硬约束，入口必须拒绝。"""
-
-    def test_valid(self):
-        for n in (81, 121, 241, 441):
-            video.validate_num_frames(n)
-
-    def test_not_8n_plus_1_exits(self):
-        with self.assertRaises(SystemExit):
-            video.validate_num_frames(100)
-
-    def test_over_441_exits(self):
-        with self.assertRaises(SystemExit):
-            video.validate_num_frames(449)
-
-    def test_frame_rate_range(self):
-        for fr in (1, 24, 60):
-            video.validate_frame_rate(fr)
-        with self.assertRaises(SystemExit):
-            video.validate_frame_rate(0)
-        with self.assertRaises(SystemExit):
-            video.validate_frame_rate(61)
-
-    def test_all_duration_presets_legal(self):
-        for dur, (nf, fr) in video.DURATIONS.items():
-            self.assertEqual((nf - 1) % 8, 0, dur)
-            self.assertLessEqual(nf, 441, dur)
-            self.assertTrue(1 <= fr <= 60, dur)
-
-    def test_resolve_frames_custom_overrides_duration(self):
-        self.assertEqual(video.resolve_frames(
-            SimpleNamespace(num_frames=161, frame_rate=30, duration="10s")), (161, 30))
-        self.assertEqual(video.resolve_frames(
-            SimpleNamespace(num_frames=None, frame_rate=None, duration="10s")), (241, 24))
-
-    def test_resolve_resolution_rules(self):
-        self.assertEqual(video.resolve_resolution(
-            SimpleNamespace(aspect="9:16", width=None, height=None)), (768, 1152))
-        self.assertEqual(video.resolve_resolution(
-            SimpleNamespace(aspect=None, width=None, height=None)), (1152, 768))
-        with self.assertRaises(SystemExit):
-            video.resolve_resolution(SimpleNamespace(aspect=None, width=800, height=None))
-
-
 class TestBodyAssembly(unittest.TestCase):
     def test_t2vid_minimal(self):
-        body = video.build_body(_ns(), 1152, 768, 121, 24)
+        body = video.build_body(_ns())
         self.assertEqual(body["model"], video.MODEL)
-        self.assertNotIn("image", body)
-        self.assertNotIn("extra_body", body)
+        self.assertEqual(body["mode"], "text")
+        # 2.5 契约（2026-10-11 实测）：宽高/帧数/帧率 forbidden field，不得出现
+        for k in ("width", "height", "num_frames", "frame_rate", "image", "extra_body"):
+            self.assertNotIn(k, body)
 
-    def test_seed_and_negative_optional(self):
-        body = video.build_body(_ns(seed=7, negative_instruction="模糊"), 1152, 768, 121, 24)
-        self.assertEqual(body["seed"], 7)
-        self.assertEqual(body["negative_prompt"], "模糊")
+    def test_seed_and_negative_not_sent(self):
+        # seed/negative_prompt 的 2.5 契约未验证，保守不发送
+        body = video.build_body(_ns(seed=7, negative_instruction="模糊"))
+        self.assertNotIn("seed", body)
+        self.assertNotIn("negative_prompt", body)
 
-    def test_ti2vid_requires_public_url(self):
-        body = video.build_body(_ns(mode="ti2vid", image="https://x/a.png"),
-                                768, 1152, 121, 24)
-        self.assertEqual(body["image"], "https://x/a.png")
+    def test_ti2vid_contract_untested_exits(self):
+        # 2.5 代图片入参契约未实测（queue full 挡住探测），显式拒绝
         with self.assertRaises(SystemExit):
-            video.build_body(_ns(mode="ti2vid", image=None), 768, 1152, 121, 24)
-        # 文档明确：视频首帧不接受本地/base64
+            video.build_body(_ns(mode="ti2vid", image="https://x/a.png"))
         with self.assertRaises(SystemExit):
-            video.build_body(_ns(mode="ti2vid", image="/local/a.png"), 768, 1152, 121, 24)
+            video.build_body(_ns(mode="ti2vid", image=None))
+        with self.assertRaises(SystemExit):
+            video.build_body(_ns(mode="ti2vid", image="/local/a.png"))
 
-    def test_multi_needs_two_urls(self):
-        urls = ["https://x/1.png", "https://x/2.png"]
-        body = video.build_body(_ns(mode="multi", images=urls), 1152, 768, 121, 24)
-        self.assertEqual(body["extra_body"], {"image": urls})  # multi 不带 mode 字段
-        with self.assertRaises(SystemExit):  # 单张应走 ti2vid
-            video.build_body(_ns(mode="multi", images=urls[:1]), 768, 1152, 121, 24)
+    def test_multi_contract_untested_exits(self):
+        with self.assertRaises(SystemExit):
+            video.build_body(_ns(mode="multi", images=["https://x/1.png", "https://x/2.png"]))
+        with self.assertRaises(SystemExit):
+            video.build_body(_ns(mode="multi", images=None))
 
-    def test_keyframes_adds_mode_field(self):
-        urls = ["https://x/1.png", "https://x/2.png"]
-        body = video.build_body(_ns(mode="keyframes", images=urls), 1152, 768, 121, 24)
-        self.assertEqual(body["extra_body"], {"image": urls, "mode": "keyframes"})
+    def test_keyframes_contract_untested_exits(self):
+        with self.assertRaises(SystemExit):
+            video.build_body(_ns(mode="keyframes", images=["https://x/1.png", "https://x/2.png"]))
 
     def test_image_images_mutually_exclusive(self):
         with self.assertRaises(SystemExit):
             video.build_body(_ns(mode="ti2vid", image="https://x/a.png",
-                                 images=["https://x/b.png", "https://x/c.png"]),
-                             768, 1152, 121, 24)
+                                 images=["https://x/b.png", "https://x/c.png"]))
 
 
 class TestSsrfGuard(unittest.TestCase):
@@ -246,16 +201,18 @@ class TestCliSmoke(unittest.TestCase):
         self.assertIn("AGNES_API_KEY", r.stderr)
 
     def test_dry_run_ok(self):
-        r = self._run("t2vid", "-i", "x", "--duration", "10s", "--dry-run",
+        r = self._run("t2vid", "-i", "x", "--dry-run",
                       env_extra={"AGNES_API_KEY": "agn-test-key-12345"})
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("241@24fps", r.stderr)
+        self.assertIn("agnes-video-2.5-flash", r.stderr)
+        self.assertIn('"mode": "text"', r.stderr)  # body JSON 内
 
-    def test_illegal_frames_rejected_even_dry_run(self):
+    def test_deprecated_legacy_params_rejected(self):
+        # 2.5 契约删除的 1.x 遗留参数，CLI 应直接报 unrecognized 而非静默吞掉
         r = self._run("t2vid", "-i", "x", "--num-frames", "100", "--dry-run",
                       env_extra={"AGNES_API_KEY": "agn-test-key-12345"})
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("8n+1", r.stderr)
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("unrecognized", r.stderr)
 
     def test_ti2vid_without_image_exits(self):
         r = self._run("ti2vid", "-i", "x", "--dry-run",

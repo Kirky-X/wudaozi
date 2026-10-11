@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """wudaozi video.py 单元测试 —— 验证纯函数与异步轮询逻辑（不打真实 API）。
 
-覆盖：validate_num_frames / validate_frame_rate / resolve_resolution /
-resolve_frames / build_body / create_task（mock）/ poll_task（mock 4 态）/
+覆盖：build_body（2.5 契约）/ create_task（mock）/ poll_task（mock 4 态）/
 save_video（mock）/ to_curl / 常量一致性。
 跑法：python3 -m pytest scripts/test_video.py -v
 """
@@ -23,83 +22,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 import video  # noqa: E402
 
 
-# ---------- validate_num_frames ----------
-class TestValidateNumFrames:
-    def test_valid_8n_plus_1(self):
-        for n in [81, 121, 161, 241, 441]:
-            video.validate_num_frames(n)  # 不抛异常
-
-    def test_invalid_not_8n_plus_1(self):
-        with pytest.raises(SystemExit):
-            video.validate_num_frames(80)
-        with pytest.raises(SystemExit):
-            video.validate_num_frames(100)
-
-    def test_over_441(self):
-        with pytest.raises(SystemExit):
-            video.validate_num_frames(449)  # 8n+1 但超上限
-
-
-class TestValidateFrameRate:
-    def test_valid_range(self):
-        for fr in [1, 24, 30, 60]:
-            video.validate_frame_rate(fr)
-
-    def test_out_of_range(self):
-        with pytest.raises(SystemExit):
-            video.validate_frame_rate(0)
-        with pytest.raises(SystemExit):
-            video.validate_frame_rate(61)
-
-
-# ---------- resolve_resolution ----------
-def _res_ns(**kw):
-    base = dict(aspect=None, width=None, height=None)
-    base.update(kw)
-    return SimpleNamespace(**base)
-
-
-class TestResolveResolution:
-    def test_aspect_preset(self):
-        assert video.resolve_resolution(_res_ns(aspect="16:9")) == (1152, 768)
-        assert video.resolve_resolution(_res_ns(aspect="9:16")) == (768, 1152)
-
-    def test_custom_wh(self):
-        assert video.resolve_resolution(_res_ns(width=800, height=600)) == (800, 600)
-
-    def test_default_16_9(self):
-        assert video.resolve_resolution(_res_ns()) == (1152, 768)
-
-    def test_single_width_exits(self):
-        with pytest.raises(SystemExit):
-            video.resolve_resolution(_res_ns(width=800))
-
-
-# ---------- resolve_frames ----------
-def _fr_ns(**kw):
-    base = dict(num_frames=None, frame_rate=None, duration=None)
-    base.update(kw)
-    return SimpleNamespace(**base)
-
-
-class TestResolveFrames:
-    def test_duration_preset(self):
-        assert video.resolve_frames(_fr_ns(duration="10s")) == (241, 24)
-        assert video.resolve_frames(_fr_ns(duration="3s")) == (81, 24)
-
-    def test_custom_num_frames(self):
-        # 161 = 8*20+1 ✓
-        assert video.resolve_frames(_fr_ns(num_frames=161, frame_rate=30)) == (161, 30)
-
-    def test_default_5s(self):
-        assert video.resolve_frames(_fr_ns()) == (121, 24)
-
-    def test_invalid_custom_frames_exits(self):
-        # 100 不是 8n+1，resolve_frames 内部调 validate 会 sys.exit
-        with pytest.raises(SystemExit):
-            video.resolve_frames(_fr_ns(num_frames=100))
-
-
 # ---------- build_body ----------
 def _body_ns(**kw):
     base = dict(
@@ -112,94 +34,58 @@ def _body_ns(**kw):
 
 class TestBuildBody:
     def test_t2vid_minimal(self):
-        body = video.build_body(_body_ns(), 1152, 768, 121, 24)
+        body = video.build_body(_body_ns())
         assert body["model"] == video.MODEL
-        assert body["width"] == 1152 and body["height"] == 768
-        assert body["num_frames"] == 121 and body["frame_rate"] == 24
+        assert body["prompt"] == "测"
+        assert body["mode"] == "text"
+        # 2.5 契约（2026-10-11 实测）：宽高/帧数/帧率均为 forbidden field，不得发送
+        assert "width" not in body and "height" not in body
+        assert "num_frames" not in body and "frame_rate" not in body
         assert "image" not in body
         assert "seed" not in body
 
-    def test_seed_and_negative(self):
-        body = video.build_body(
-            _body_ns(seed=42, negative_instruction="模糊"), 1152, 768, 121, 24
-        )
-        assert body["seed"] == 42
-        assert body["negative_prompt"] == "模糊"
+    def test_seed_and_negative_not_sent(self):
+        # seed/negative_prompt 的 2.5 契约未验证，保守不发送（发了若 forbidden 即 400）
+        body = video.build_body(_body_ns(seed=42, negative_instruction="模糊"))
+        assert "seed" not in body and "negative_prompt" not in body
 
-    def test_ti2vid_with_url(self):
-        body = video.build_body(
-            _body_ns(mode="ti2vid", image="https://x.com/a.png"), 768, 1152, 121, 24
-        )
-        assert body["image"] == "https://x.com/a.png"
-
-    def test_ti2vid_missing_image_exits(self):
+    def test_ti2vid_untested_contract_exits(self):
+        # 2.5 代图片入参契约未实测（queue full 挡住探测），显式拒绝
         with pytest.raises(SystemExit):
-            video.build_body(_body_ns(mode="ti2vid", image=None), 768, 1152, 121, 24)
+            video.build_body(_body_ns(mode="ti2vid", image="https://x.com/a.png"))
 
-    def test_ti2vid_local_path_exits(self):
-        # 视频生成 image 不支持本地/base64
+    def test_multi_untested_contract_exits(self):
         with pytest.raises(SystemExit):
             video.build_body(
-                _body_ns(mode="ti2vid", image="/local/a.png"), 768, 1152, 121, 24
+                _body_ns(mode="multi", images=["https://x.com/1.png", "https://x.com/2.png"])
+            )
+
+    def test_keyframes_untested_contract_exits(self):
+        with pytest.raises(SystemExit):
+            video.build_body(
+                _body_ns(mode="keyframes", images=["https://x.com/1.png", "https://x.com/2.png"])
             )
 
     def test_image_and_images_mutually_exclusive_exits(self):
-        # --image（ti2vid）与 --images（multi/keyframes）互斥，不静默丢参数
+        # 互斥在 build_body 的 t2vid 拒绝之前不受影响——非 t2vid 一律显式拒绝
         with pytest.raises(SystemExit):
             video.build_body(
                 _body_ns(mode="ti2vid", image="https://x/a.png",
-                         images=["https://x/b.png", "https://x/c.png"]),
-                768, 1152, 121, 24,
+                         images=["https://x/b.png", "https://x/c.png"])
             )
 
 
-class TestBuildBodyMultiKeyframes:
-    """multi 多图视频 / keyframes 关键帧动画 —— extra_body.image 数组（agnes 官方最佳实践）。"""
-
-    def test_multi_with_images(self):
-        body = video.build_body(
-            _body_ns(mode="multi", images=["https://x.com/1.png", "https://x.com/2.png"]),
-            1152, 768, 121, 24,
-        )
-        # multi：extra_body.image 数组，不带 mode 字段
-        assert body["extra_body"] == {"image": ["https://x.com/1.png", "https://x.com/2.png"]}
-        assert "mode" not in body["extra_body"]
-
-    def test_keyframes_with_images(self):
-        body = video.build_body(
-            _body_ns(mode="keyframes", images=["https://x.com/1.png", "https://x.com/2.png"]),
-            1152, 768, 121, 24,
-        )
-        # keyframes：extra_body.image 数组 + mode=keyframes
-        assert body["extra_body"] == {
-            "image": ["https://x.com/1.png", "https://x.com/2.png"],
-            "mode": "keyframes",
-        }
+class TestBuildBodyLegacyModesRejected:
+    """2.5 代契约下 multi/keyframes 的 extra_body 形状未探明——防发 forbidden 字段。"""
 
     def test_multi_missing_images_exits(self):
         with pytest.raises(SystemExit):
-            video.build_body(_body_ns(mode="multi", images=None), 768, 1152, 121, 24)
-
-    def test_multi_single_image_exits(self):
-        # multi 至少 2 张（单张走 ti2vid）
-        with pytest.raises(SystemExit):
-            video.build_body(
-                _body_ns(mode="multi", images=["https://x.com/1.png"]), 768, 1152, 121, 24
-            )
-
-    def test_multi_local_path_exits(self):
-        # 视频生成 images 只接受公网 URL，不支持本地/base64
-        with pytest.raises(SystemExit):
-            video.build_body(
-                _body_ns(mode="multi", images=["/local/1.png", "https://x.com/2.png"]),
-                768, 1152, 121, 24,
-            )
+            video.build_body(_body_ns(mode="multi", images=None))
 
     def test_keyframes_local_path_exits(self):
         with pytest.raises(SystemExit):
             video.build_body(
-                _body_ns(mode="keyframes", images=["https://x.com/1.png", "/local/2.png"]),
-                768, 1152, 121, 24,
+                _body_ns(mode="keyframes", images=["https://x.com/1.png", "/local/2.png"])
             )
 
 
@@ -493,12 +379,6 @@ class TestToCurl:
 
 # ---------- 常量一致性 ----------
 class TestConstants:
-    def test_durations_all_8n_plus_1(self):
-        for dur, (nf, fr) in video.DURATIONS.items():
-            assert (nf - 1) % 8 == 0, dur
-            assert nf <= 441, dur
-            assert 1 <= fr <= 60, dur
-
     def test_resolutions_pairs(self):
         for k, (w, h) in video.RESOLUTIONS.items():
             assert isinstance(w, int) and isinstance(h, int), k
