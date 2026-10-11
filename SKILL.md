@@ -1,9 +1,9 @@
 ---
 name: wudaozi
-description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding (VLM/OCR), video generation (t2v/i2v/multi-image/keyframes). Triggers: text-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image/character sheet; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Providers: images via agnes cloud/boogu local/kolors (t2i only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0; keys via environment variables. Boundary: video/photo GENERATION lives here, but text storyboard scripts & Excalidraw diagrams → cangjie; UI design reviews → maliang/diting; brand guideline boards → brandkit; vector logo files & icon asset sourcing → xizhi."
+description: "Multi-capability media generation skill: text-to-image/image-to-image, image understanding (VLM/OCR), video generation (t2v/i2v/multi-image/keyframes). Triggers: text-to-image/generate image/AI drawing/output image/boogu/agnes/kolors/draw one/illustration/product image/IP character image/change background/edit image/character sheet; image understanding/see image/recognize image/OCR/solve problem/DeepSeek-OCR; generate video/text-to-video/image-to-video/agnes-video. Providers: images via agnes cloud/boogu local/kolors (t2i only), understanding via agnes-2.0-flash/aiping DeepSeek-OCR-2, video via agnes-video-v2.0; keys via environment variables. Boundary: video/photo GENERATION lives here, but text storyboard scripts & Excalidraw diagrams → cangjie; UI design reviews → maliang/diting; brand guideline boards → references/brand-board.md (internalized); vector logo files & icon asset sourcing → xizhi."
 license: MIT
 metadata:
-  version: "0.3.5"
+  version: "0.3.6"
   author: "Kirky-X"
   repo: "https://github.com/Kirky-X/wudaozi"
   tags: "text-to-image, image-to-image, image-understanding, video-generation, boogu, agnes, kolors, deepseek-ocr, vlm, cloud-provider, local-provider, prompt-engineering, image-generation, ip-character, product-image, logo, illustration, multi-image-video, keyframes"
@@ -127,6 +127,8 @@ Read [`references/prompt-template.md`](references/prompt-template.md), complete 
 1. Subject → 2. Action/Expression → 3. Background/Environment → 4. Composition/Perspective → 5. Lighting → 6. Style/Medium → 7. Quality
 
 > **Vertical scenes** (UI screenshot / infographic / poster / product template with established style systems): pick the template + style via `gpt-image-2-style-library` first (template & style selection skill), then return here for provider routing and execution. For layout-precise needs without it, use the JSON structured prompt block in `references/prompt-template.md` § JSON Structured Prompt Block.
+
+> **Multi-image requests** (multi-screen app concepts / per-section site reference images / N-image sets): count, design-bible lock, no-cropping and pre-generation checks follow [`references/multi-image-discipline.md`](references/multi-image-discipline.md); brand guideline boards → [`references/brand-board.md`](references/brand-board.md).
 
 #### Vague requirements → Ask one question at a time for clarification
 
@@ -432,7 +434,7 @@ These three are **specialized subtasks of t2i**, using the same image generation
 - User wants **audio/3D model** generation (this skill only does 2D images + video).
 - User wants to **retouch/composite existing images** (PS-like operations, e.g., matting, color grading, compositing) → Use image processing tools, not generation models.
 - User wants **video editing** (trim/merge/add subtitles to existing video) → This skill only **generates** video, doesn't edit.
-- User wants **brand guideline boards / logo systems** → route to `brandkit`（品牌规范板/Logo 体系，非插画式出图）.
+- User wants **brand guideline boards / logo systems** → internal route: load `references/brand-board.md`（品牌规范板/Logo 体系/identity deck 的 7 维预设包，已从外部 skill 内化）.
 - User wants **Excalidraw charts & diagrams** → route to `cangjie diagram`（流程图/架构图等示意图）.
 - User wants **UI design reviews** → route to `diting review pr` / `maliang critique`.
 - User wants **vertical-scene templates / style selection** (UI screenshot system, infographic engine, poster/product template library, style tags) → route to `gpt-image-2-style-library` (template & style selection). Division of labor: style-library picks *which template/style*, wudaozi executes *generation* (provider routing + scripts). Without that skill installed, use the JSON structured prompt block in `references/prompt-template.md` to describe layout yourself.
