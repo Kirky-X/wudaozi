@@ -28,7 +28,11 @@
     ],
     "retired": {
       "agnes-video-v2.0": "已下线（503 model_not_found：No available channel under group default），scripts/video.py 旧默认模型",
-      "agnes-2.0-flash": "已下线（不在 /v1/models 清单），scripts/vision.py 旧默认模型，已换代 agnes-2.5-flash（待下次标定实测）"
+      "agnes-2.0-flash": "已下线（不在 /v1/models 清单），scripts/vision.py 旧默认模型，已换代 agnes-2.5-flash 并于 2026-10-11 实测可用"
+    },
+    "tested": {
+      "image_t2i": "agnes-image-2.1-flash 实测可用（2026-10-11，1024x1024 t2i 19.9s/1.1MB，size 字段仍被接受、无 forbidden 问题；免费层图片 1K RPM 10 无队列压力）。观察：光照词服从度一般——prompt「月光下」产出暖阳光。",
+      "vision": "agnes-2.5-flash（换代后）实测可用：图像理解问答准确（识别橘猫窗边并正确判定阳光；base64 data URI 传图正常），vision 换代闭环完成。"
     }
   },
   "contract": {
