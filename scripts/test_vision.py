@@ -94,7 +94,7 @@ class TestResolveImageInputSSRF:
 class TestBuildBody:
     def test_agnes_body(self):
         body = vision.build_body("agnes", "https://x/a.jpg", "看图", 1024)
-        assert body["model"] == "agnes-2.0-flash"
+        assert body["model"] == "agnes-2.5-flash"
         assert body["max_tokens"] == 1024
         parts = body["messages"][0]["content"]
         assert parts[0] == {"type": "image_url", "image_url": {"url": "https://x/a.jpg"}}
@@ -227,7 +227,7 @@ class TestProviders:
 
     def test_two_providers(self):
         assert set(vision.PROVIDERS) == {"agnes", "aiping"}
-        assert vision.PROVIDERS["agnes"]["model"] == "agnes-2.0-flash"
+        assert vision.PROVIDERS["agnes"]["model"] == "agnes-2.5-flash"
         assert vision.PROVIDERS["aiping"]["model"] == "DeepSeek-OCR-2"
 
 

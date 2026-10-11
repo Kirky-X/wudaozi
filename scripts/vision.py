@@ -2,7 +2,7 @@
 """wudaozi —— 图像理解（VLM）双 provider 包装脚本。
 
 支持两个视觉语言模型，用同一种 OpenAI 兼容 chat/completions 接口：
-- agnes（agnes-2.0-flash）：文档称只支持 image_url 公网 URL，实测 base64 data URI 也能用
+- agnes（agnes-2.5-flash）：文档称只支持 image_url 公网 URL，实测 base64 data URI 也能用
 - aiping（DeepSeek-OCR-2）：image_url（URL 或 base64 data URI）
 
 核心职责（纯 stdlib）：
@@ -51,9 +51,9 @@ LATEX_MAP = {
 PROVIDERS = {
     "agnes": {
         "endpoint": "https://apihub.agnes-ai.com/v1/chat/completions",
-        "model": "agnes-2.0-flash",
+        "model": "agnes-2.5-flash",
         "key_env": "AGNES_API_KEY",
-        "hint": "agnes-image-2.1-flash 是文生图，图像理解用 agnes-2.0-flash（本脚本）",
+        "hint": "agnes-image-2.1-flash 是文生图，图像理解用 agnes-2.5-flash（本脚本）",
     },
     "aiping": {
         "endpoint": "https://www.aiping.cn/api/v1/chat/completions",
@@ -152,7 +152,7 @@ def to_curl(provider: str, body: dict, api_key: str) -> str:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="vision.py",
-        description="wudaozi —— 图像理解双 provider（agnes-2.0-flash / aiping DeepSeek-OCR-2）",
+        description="wudaozi —— 图像理解双 provider（agnes-2.5-flash / aiping DeepSeek-OCR-2）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 示例：
@@ -169,7 +169,7 @@ def parse_args() -> argparse.Namespace:
   AGNES_API_KEY=agn-xxx python3 vision.py agnes --image x.jpg -q "..." --output result.txt
 
 provider 选择：
-  agnes  → agnes-2.0-flash（AGNES_API_KEY）
+  agnes  → agnes-2.5-flash（AGNES_API_KEY）
   aiping → DeepSeek-OCR-2（AIPING_API_KEY，OCR/图文强）
 """,
     )
@@ -275,7 +275,7 @@ if __name__ == "__main__":
     assert resolve_image_input("https://x.com/a.jpg") == "https://x.com/a.jpg"
     # body 结构
     body = build_body("agnes", "data:image/png;base64,AAA", "看图", 512)
-    assert body["model"] == "agnes-2.0-flash"
+    assert body["model"] == "agnes-2.5-flash"
     assert body["max_tokens"] == 512
     assert body["temperature"] == 0.0, "OCR 默认禁随机采样（官方参考实现）"
     assert build_body("agnes", "x", "看图", 100, 0.7)["temperature"] == 0.7
