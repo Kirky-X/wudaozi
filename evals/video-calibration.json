@@ -31,7 +31,7 @@
       "agnes-2.0-flash": "已下线（不在 /v1/models 清单），scripts/vision.py 旧默认模型，已换代 agnes-2.5-flash 并于 2026-10-11 实测可用"
     },
     "tested": {
-      "image_t2i": "agnes-image-2.1-flash 实测可用（2026-10-11，1024x1024 t2i 19.9s/1.1MB，size 字段仍被接受、无 forbidden 问题；免费层图片 1K RPM 10 无队列压力）。观察：光照词服从度一般——prompt「月光下」产出暖阳光。",
+      "image_t2i": "agnes-image-2.1-flash 实测可用（2026-10-11，1024x1024 t2i 17.9-19.9s，size 字段仍被接受、无 forbidden 问题；免费层图片 1K RPM 10 无队列压力）。光照词对照：prompt 自相矛盾时（月光+暖光）模型仲裁取暖光侧；信号自洽（月光+冷蓝色限定）则正确落实冷蓝月光——光照控制可靠，前提是 prompt 内光源信号不自相矛盾。",
       "vision": "agnes-2.5-flash（换代后）实测可用：图像理解问答准确（识别橘猫窗边并正确判定阳光；base64 data URI 传图正常），vision 换代闭环完成。"
     }
   },
