@@ -97,11 +97,15 @@
       "t": "2026-10-11 12:23-12:32",
       "body": "{model,prompt,mode:text}（适配后脚本）",
       "result": "503 video_queue_full ×8（含后台 90s 退避重试 5 次，free 层视频队列持续满载 26+ 分钟，非瞬态）"
+    },
+    {
+      "t": "2026-10-11 20:24-22:08",
+      "result": "1 小时后台巡检 12 次（5min 间隔）全部 video_queue_full；全天累计 27 次请求 / 2 小时 4 分钟窗口零放行——free 层视频队列为常态饱和，等待不解封"
     }
   ],
   "generation": {
-    "status": "blocked_by_free_queue",
-    "note": "参数契约标定完成（8 次真实请求全部通过认证与校验）；真实 3s 生成与音轨（audio track）检查被 free 层 video_queue_full 阻塞——解封条件：队列释放（夜间/低峰重试）或升级 Token Plan。video.py 已适配新契约，队列恢复后直接可跑。 官方 Token Plan 文档：free 层视频 RPM 名义 2、公告下调后实际仅 1，且无每日秒数配额（每日 500s 是 Token Plan 权益）——这解释了 video_queue_full 持续满载：free 层共享队列容量极小。Token Plan 分入门/专业/高级三档，视频 RPM 提升至 5、每日 500 秒。",
+    "status": "blocked_by_free_queue_permanent",
+    "note": "参数契约标定完成；27 次请求跨 2 小时（含白天的 90s 退避与晚间的 5min 巡检）零放行，证实 free 层视频队列常态饱和（free RPM 实际=1、无专属配额）。确定性解封：升级 Token Plan（视频 RPM 5 + 每日 500s 专属配额）。video.py 已适配新契约，key 有效，升级后立即可跑。音轨检查（mp4 hdlr 解析）待首个成功生成。",
     "audio_track_check": "待生成成功后用 mp4 handler 类型解析（无 ffprobe，用 python 读 moov/trak/hdlr）"
   }
 }
